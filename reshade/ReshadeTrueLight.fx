@@ -10,6 +10,7 @@
 
 #include "ReshadeTrueLight.fxh"
 
+#define ASPECT_RATIO ReShade::AspectRatio
 
 // ============================
 // HELPERS
@@ -37,6 +38,13 @@ float2 BlueNoiseJitterUV(float2 uv)
 
 float Luma(float3 c) { return dot(c, float3(0.2126,0.7152,0.0722)); }
 
+// Wrapper: returns linear view-space distance (meters).
+// Uses ReShade built-in which already linearizes and handles reversed-Z.
+float GetLinearDepth(float2 uv)
+{
+    if (!HasDepth) return 1e6; // treat as very far when no depth available
+    return ReShade::GetLinearizedDepth(uv);
+}
 
 // Reconstruct view-space position from depth texture sample
 float3 ReconstructViewPos(float2 uv)
@@ -51,6 +59,58 @@ float3 ReconstructViewPos(float2 uv)
     view.z = depth;
 
     return view;
+}
+
+// Reconstruct view-space position using InvProjectionMatrix and linear view depth.
+// linearDepth is positive view-space distance (meters).
+float3 ReconstructViewPosFromLinearZ(float2 uv, float linearDepth)
+{
+    // Build clip-space z from projecting a point at -linearDepth along view Z
+    // This avoids ad-hoc Z->NDC hacks and keeps everything consistent.
+    float4 projZ = mul(ProjectionMatrix, float4(0.0, 0.0, -linearDepth, 1.0));
+    if (abs(projZ.w) < 1e-6) projZ.w = 1e-6;
+    float ndcZ = projZ.z / projZ.w;
+
+    float4 clip = float4(uv * 2.0 - 1.0, ndcZ, 1.0);
+    float4 view = mul(InvProjectionMatrix, clip);
+    view.xyz /= view.w;
+    return view.xyz;
+}
+
+// Approximate unprojection using FOV and aspect (no extra params)
+float3 ReconstructViewPosApprox(float2 uv, float depthLinear)
+{
+    if (depthLinear <= 0.0 || depthLinear > 1e5) return float3(0.0, 0.0, -depthLinear);
+
+    // Convert uv to NDC [-1,1] and flip Y if needed
+    float2 ndc = uv * 2.0 - 1.0;
+    ndc.y = -ndc.y;
+
+    // Derive aspect from ReShade macro
+    float aspect = ASPECT_RATIO;
+
+	// Try to derive vertical FOV from ProjectionMatrix if CameraFovY not provided
+    float fovY = 0.0;
+    float m22 = ProjectionMatrix[1].y; // _22
+    if (abs(m22) > 1e-6)
+    {
+        fovY = 2.0 * atan(1.0 / m22);
+    }
+    else
+    {
+        // fallback default FOV (radians)
+        fovY = radians(60.0);
+    }
+
+    float tanHalfFov = tan(fovY * 0.5);
+
+    // Compute view-space ray direction (D3D convention: forward = -Z)
+    float vx = ndc.x * aspect * tanHalfFov;
+    float vy = ndc.y * tanHalfFov;
+    float vz = -1.0;
+
+    float3 viewDir = normalize(float3(vx, vy, vz));
+    return viewDir * depthLinear;
 }
 
 // Project view-space position into UV using provided matrix
@@ -675,6 +735,23 @@ float ComputeCoC(float depthViewZ)
     return clamp(px, 0.0, MaxCoCRadius);
 }
 
+// viewZ is view-space z (negative forward). If positive, invert.
+float ComputeCoCFromViewZ(float viewZ)
+{
+    float z = viewZ;
+    if (z > 0.0) z = -z;
+
+    // Thin-lens approximate CoC in world units (tuning constant focalLength)
+    float focalLength = 50.0; // tuning constant (mm-equivalent). You can expose as uniform.
+    float fd = max(0.001, FocalDistance); // focal distance in meters
+    float cocWorld = abs((focalLength * (z - fd)) / (z * fd)) * (1000.0 / max(0.0001, Aperture));
+
+    // Convert world CoC to pixels by normalizing to MaxCoCRadius
+    float cocPx = saturate(cocWorld / MaxCoCRadius) * MaxCoCRadius;
+    return clamp(cocPx, 0.0, MaxCoCRadius);
+}
+
+
 float DepthWeight(float centerDepth, float sampleDepth, float radius)
 {
     float diff = abs(centerDepth - sampleDepth);
@@ -682,41 +759,27 @@ float DepthWeight(float centerDepth, float sampleDepth, float radius)
     return w;
 }
 
-// DoF gathers (flattened weights, dynamic loops)
 float4 DoF_GatherH(float2 uv, float cocPx)
 {
-    int taps = min(9, DOF_MAX_TAPS);
-    float halfCount = taps * 0.5;
+    int taps = DOF_MAX_TAPS; // 9
+    int halfTaps = taps / 2;
+    float2 dir = float2(1.0, 0.0) * (cocPx / max(1.0, float(halfTaps)));
 
-    float2 dir = float2(1.0, 0.0) * (cocPx / max(1.0, halfCount));
-
-    float centerDepth = ReShade::GetLinearizedDepth(uv);
-
-    float3 accum = float3(0, 0, 0);
+    float centerDepth = GetLinearDepth(uv);
+    float3 accum = float3(0,0,0);
     float wsum = 0.0;
-    
+
     [loop]
-    for (int i = 0; i < DOF_MAX_TAPS; ++i)
+    for (int i = 0; i < taps; ++i)
     {
-        if (i >= taps)
-            break;
-
-        float idx = (float)i - halfCount;
-
-        float2 sampleUV = uv + dir * idx;
-
-        float sampleDepth = ReShade::GetLinearizedDepth(sampleUV);
-
+        int idx = i - halfTaps;
+        float2 sampleUV = uv + dir * float(idx);
+        float sampleDepth = GetLinearDepth(sampleUV);
         float depthDiff = abs(centerDepth - sampleDepth);
-
         float dw = exp(-depthDiff * 200.0);
-
         float3 sampleCol = tex2D(BackBuffer, sampleUV).rgb;
-
         float gw = DOF_WEIGHTS[i];
-
         float w = gw * dw;
-
         accum += sampleCol * w;
         wsum += w;
     }
@@ -726,44 +789,32 @@ float4 DoF_GatherH(float2 uv, float cocPx)
 
 float4 DoF_GatherV(float2 uv, float cocPx)
 {
-    int taps = min(9, DOF_MAX_TAPS);
-    float halfCount = taps * 0.5;
+    int taps = DOF_MAX_TAPS; // 9
+    int halfTaps = taps / 2;
+    float2 dir = float2(0.0, 1.0) * (cocPx / max(1.0, float(halfTaps)));
 
-    float2 dir = float2(0.0, 1.0) * (cocPx / max(1.0, halfCount));
-
-    float centerDepth = ReShade::GetLinearizedDepth(uv);
-
-    float3 accum = float3(0, 0, 0);
+    float centerDepth = GetLinearDepth(uv);
+    float3 accum = float3(0,0,0);
     float wsum = 0.0;
 
     [loop]
-    for (int i = 0; i < DOF_MAX_TAPS; ++i)
+    for (int i = 0; i < taps; ++i)
     {
-        if (i >= taps)
-            break;
-
-        float idx = (float)i - halfCount;
-
-        float2 sampleUV = uv + dir * idx;
-
-        float sampleDepth = ReShade::GetLinearizedDepth(sampleUV);
-
+        int idx = i - halfTaps;
+        float2 sampleUV = uv + dir * float(idx);
+        float sampleDepth = GetLinearDepth(sampleUV);
         float depthDiff = abs(centerDepth - sampleDepth);
-
         float dw = exp(-depthDiff * 200.0);
-
         float3 sampleCol = tex2D(BackBuffer, sampleUV).rgb;
-
         float gw = DOF_WEIGHTS[i];
-
         float w = gw * dw;
-
         accum += sampleCol * w;
         wsum += w;
     }
 
     return float4(accum / max(1e-6, wsum), 1.0);
 }
+
 
 // Sample DoF history (reads Prev)
 float4 SampleDoFHistory(float2 uv, float3 viewPos)
@@ -804,40 +855,57 @@ float4 MotionAwareBlendDoF(float4 curr, float4 hist, float2 motionUV)
 
 float4 PS_DoFHistoryWrite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
-    float depth = ReShade::GetLinearizedDepth(uv);
+     if (!HasDepth)
+    {
+        float3 base = tex2D(BackBuffer, uv).rgb;
+        return float4(base, 0.0);
+    }
 
-    float3 color = tex2D(BackBuffer, uv).rgb;
+    float depthLinear = GetLinearDepth(uv);
+    if (depthLinear <= 0.0 || depthLinear > 1e5)
+    {
+        float3 base = tex2D(BackBuffer, uv).rgb;
+        return float4(base, 0.0);
+    }
 
-    // sky / far plane → no DoF history
-    if (depth >= 1.0)
-        return float4(color, 0.0);
+    // Reconstruct view position
+    float3 viewPos;
+    // Use exact reconstruction if InvProjectionMatrix is set (non-identity)
+    bool haveInv = !(all(InvProjectionMatrix[0] == float4(1,0,0,0)));
+    if (haveInv)
+        viewPos = ReconstructViewPosFromLinearZ(uv, depthLinear);
+    else
+        viewPos = ReconstructViewPosApprox(uv, depthLinear);
 
-    float3 viewPos = ReconstructViewPos(uv);
+    float cocPx = ComputeCoCFromViewZ(viewPos.z);
 
-    // IMPORTANT: use view-space Z consistently
-    float coc = ComputeCoC(viewPos.z);
-
-    float4 h = DoF_GatherH(uv, coc);
-    float4 v = DoF_GatherV(uv, coc);
-
+    float4 h = DoF_GatherH(uv, cocPx);
+    float4 v = DoF_GatherV(uv, cocPx);
     float3 outCol = v.rgb;
+    float outA = saturate(cocPx / MaxCoCRadius);
 
-    float outA = saturate(coc / MaxCoCRadius);
+    if (UseReprojection)
+    {
+        float4 prevClip = mul(PrevViewProj, float4(viewPos, 1.0));
+        if (abs(prevClip.w) >= 1e-6)
+        {
+            prevClip /= prevClip.w;
+            float2 prevUV = prevClip.xy * 0.5 + 0.5;
+            if (prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0)
+            {
+                float4 hist = tex2D(DoFHistoryPrevSampler, prevUV);
+                float2 motion = EstimateMotionUV(uv);
+                return MotionAwareBlendDoF(float4(outCol, outA), hist, motion);
+            }
+        }
+    }
 
-    float4 hist = SampleDoFHistory(uv, viewPos);
-
-    float2 motion = EstimateMotionUV(uv);
-
-    return MotionAwareBlendDoF(
-        float4(outCol, outA),
-        hist,
-        motion
-    );
+    return float4(outCol, outA);
 }
 
 float4 PS_DoFBlur(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
-    float2 t = ReShade::PixelSize * 1.0;
+    float2 t = ReShade::PixelSize;
     float4 s0 = tex2D(DoFHistoryCurrSampler, uv);
     float4 s1 = tex2D(DoFHistoryCurrSampler, uv + float2( t.x, 0));
     float4 s2 = tex2D(DoFHistoryCurrSampler, uv + float2(-t.x, 0));
@@ -849,33 +917,11 @@ float4 PS_DoFBlur(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 
 float3 ApplyDepthOfField(float2 uv, float3 color)
 {
-    if (!EnableDoF)
-        return color;
-
-    float4 dof = tex2D(DoFBlurSampler, uv);
-
-    if (dof.a <= 0.001)
-        return color;
-
-    float cocNorm = dof.a;
+    float4 dof = tex2D(DoFBlurSampler, uv); // or DoFHistoryCurrSampler depending on pass order
+    float cocNorm = dof.a; // 0..1
+    if (cocNorm <= 1e-4) return color;
     float3 blurred = dof.rgb;
-
-    // ReShade depth (consistent pipeline)    
-    float3 viewPos = ReconstructViewPos(uv);
-
-    float z = -viewPos.z;
-
-    float nearFactor = saturate((FocalDistance - z) / FocalDistance);
-
-    // NOTE: this was a no-op before (lerp(x,x,y) = x)
-    float nearBoost = 1.0;
-
-    float finalMix = saturate(cocNorm * nearBoost);
-
-    float edge = smoothstep(0.02, 0.08, cocNorm);
-
-    float mix = lerp(finalMix, edge * finalMix, 0.5);
-
+    float mix = cocNorm; // you can tune curve here
     return lerp(color, blurred, mix);
 }
 
