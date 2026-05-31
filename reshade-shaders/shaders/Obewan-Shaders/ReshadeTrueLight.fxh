@@ -82,6 +82,13 @@ sampler BloomMip2Sampler { Texture = BloomMip2; MinFilter = LINEAR; MagFilter = 
 texture2D LumCurrTex { Width = 64; Height = 64; Format = R16F; };
 sampler LumCurrSampler { Texture = LumCurrTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
 
+// Adapted luminance (1x1, smoothed over time via a tiny ping-pong — the only
+// cross-frame state in the shader; needs no reprojection matrices).
+texture2D AdaptTex { Width = 1; Height = 1; Format = R16F; };
+sampler AdaptSampler { Texture = AdaptTex; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
+texture2D AdaptPrevTex { Width = 1; Height = 1; Format = R16F; };
+sampler AdaptPrevSampler { Texture = AdaptPrevTex; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
+
 // AO (computed at half-res, upsampled in the blur)
 texture2D AORawTex { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = R8; };
 sampler AORawSampler { Texture = AORawTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
@@ -111,14 +118,18 @@ sampler DoFBlurSampler { Texture = DoFBlurTex; MinFilter = LINEAR; MagFilter = L
 // Place BlueNoise.png in reshade-shaders/Textures. Default off to avoid load failures.
 // ============================
 uniform bool UseBlueNoise < ui_type = "checkbox"; ui_label = "Use Blue Noise"; > = false;
-texture2D BlueNoiseTex < source = "BlueNoise.png"; pooled = true; > { Width = 64; Height = 64; Format = RGBA8; };
+texture2D BlueNoiseTex < source = "bluenoise.png"; pooled = true; > { Width = 64; Height = 64; Format = RGBA8; };
 sampler BlueNoiseSampler { Texture = BlueNoiseTex; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; AddressU = REPEAT; AddressV = REPEAT; };
 
 // ============================
 // EXPOSURE
 // ============================
+uniform float frametime < source = "frametime"; >; // milliseconds since last frame
 uniform bool  EnableAutoExposure < ui_type = "checkbox"; ui_label = "Auto Exposure"; > = true;
 uniform float ExposureKey  < ui_type = "slider"; ui_min = 0.05; ui_max = 0.50; ui_step = 0.01; ui_label = "Exposure Key (middle grey)"; > = 0.18;
+uniform float AdaptSpeed   < ui_type = "slider"; ui_min = 0.1;  ui_max = 8.0;  ui_step = 0.1;  ui_label = "Adaptation Speed"; ui_tooltip = "Higher = faster eye adaptation. Lower = smoother."; > = 2.0;
+uniform float ExposureMin  < ui_type = "slider"; ui_min = 0.05; ui_max = 2.0;  ui_step = 0.01; ui_label = "Min Exposure (gain floor)"; > = 0.25;
+uniform float ExposureMax  < ui_type = "slider"; ui_min = 0.5;  ui_max = 8.0;  ui_step = 0.05; ui_label = "Max Exposure (gain ceiling)"; ui_tooltip = "Lower this to stop dark/night scenes from over-brightening."; > = 2.0;
 uniform float ManualExposure < ui_type = "slider"; ui_min = -4.0; ui_max = 4.0; ui_step = 0.1; ui_label = "Manual Exposure (EV, when auto off)"; > = 0.0;
 
 // ============================

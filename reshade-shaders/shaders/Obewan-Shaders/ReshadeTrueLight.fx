@@ -432,12 +432,9 @@ float4 PS_LumDown(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     return (sum / float(K)).xxxx;
 }
 
-float ComputeExposure()
+// Coarse scene-average luminance from the 64x64 downsample.
+float SceneAvgLuma()
 {
-    if (!EnableAutoExposure)
-        return exp2(ManualExposure);
-
-    // Average a coarse grid of the luminance downsample to approximate scene average.
     float sum = 0.0;
     [loop]
     for (int y = 0; y < 4; ++y)
@@ -449,8 +446,32 @@ float ComputeExposure()
             sum += tex2Dlod(LumCurrSampler, float4(g, 0, 0)).r;
         }
     }
-    float avg = max(sum / 16.0, 1e-4);
-    return clamp(ExposureKey / avg, 0.1, 8.0);
+    return max(sum / 16.0, 1e-4);
+}
+
+// Smoothly approach the current scene average (frame-rate independent).
+float4 PS_Adapt(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+{
+    float curr = SceneAvgLuma();
+    float prev = tex2Dlod(AdaptPrevSampler, float4(0.5, 0.5, 0, 0)).r;
+    if (prev <= 0.0) prev = curr; // first frame init
+
+    float rate = saturate(AdaptSpeed * frametime * 0.001); // frametime in ms
+    return lerp(prev, curr, rate).xxxx;
+}
+
+float4 PS_AdaptCopy(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+{
+    return tex2Dlod(AdaptSampler, float4(0.5, 0.5, 0, 0)).r.xxxx;
+}
+
+float ComputeExposure()
+{
+    if (!EnableAutoExposure)
+        return exp2(ManualExposure);
+
+    float avg = max(tex2Dlod(AdaptSampler, float4(0.5, 0.5, 0, 0)).r, 1e-4);
+    return clamp(ExposureKey / avg, ExposureMin, ExposureMax);
 }
 
 // ============================
@@ -475,6 +496,17 @@ float3 ApplyGrain(float3 c, float2 uv)
     float n = Hash21(scaled + float(FrameIndex));
     float g = (n - 0.5) * 2.0 * GrainAmount;
     return saturate(c + g.xxx);
+}
+
+// Triangular-PDF dither (~1 LSB at 8-bit), animated. Breaks up banding on
+// smooth gradients such as the night sky without a visible grain look.
+float3 ApplyDither(float3 c, float2 uv)
+{
+    float2 seed = uv * float2(BUFFER_WIDTH, BUFFER_HEIGHT) + float(FrameIndex);
+    float r1 = Hash21(seed);
+    float r2 = Hash21(seed + 17.31);
+    float t = r1 + r2 - 1.0; // triangular in [-1, 1]
+    return c + t * (1.0 / 255.0);
 }
 
 // ============================
@@ -607,6 +639,9 @@ float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
     if (EnableSharpen) c = SharpenPass(uv, c);
     if (EnableGrain)   c = ApplyGrain(c, uv);
 
+    // Dither last, just before 8-bit quantization, to suppress banding.
+    c = ApplyDither(c, uv);
+
     return float4(saturate(c), 1.0);
 }
 
@@ -616,6 +651,8 @@ float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
 technique ReshadeTrueLight
 {
     pass LumDown        { VertexShader = PostProcessVS; PixelShader = PS_LumDown;       RenderTarget = LumCurrTex; }
+    pass Adapt          { VertexShader = PostProcessVS; PixelShader = PS_Adapt;         RenderTarget = AdaptTex; }
+    pass AdaptCopy      { VertexShader = PostProcessVS; PixelShader = PS_AdaptCopy;     RenderTarget = AdaptPrevTex; }
 
     pass AOCompute      { VertexShader = PostProcessVS; PixelShader = PS_AOCompute;      RenderTarget = AORawTex; }
     pass AOBlur         { VertexShader = PostProcessVS; PixelShader = PS_AOBlur;         RenderTarget = AOBlurTex; }
