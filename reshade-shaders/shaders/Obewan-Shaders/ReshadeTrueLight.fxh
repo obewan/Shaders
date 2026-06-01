@@ -231,6 +231,13 @@ uniform float LensFlareHalo      < ui_type = "slider"; ui_min = 0.0; ui_max = 0.
 uniform float LensFlareCA        < ui_type = "slider"; ui_min = 0.0; ui_max = 8.0;  ui_step = 0.1;  ui_label = "Lens Flare Chromatic Aberration"; > = 2.0;
 
 // ============================
+// LOCAL CONTRAST (clarity)
+// ============================
+uniform bool  EnableClarity < ui_type = "checkbox"; ui_label = "Enable Clarity"; > = true;
+uniform float ClarityAmount < ui_type = "slider"; ui_min = 0.0; ui_max = 1.5; ui_step = 0.01; ui_label = "Clarity Amount"; ui_tooltip = "Local midtone contrast: pulls out texture detail (rock, fabric, foliage) for a crisp, near-HDR pop without global contrast's flatness."; > = 0.3;
+uniform float ClarityRadius < ui_type = "slider"; ui_min = 8.0; ui_max = 96.0; ui_step = 1.0; ui_label = "Clarity Radius (px)"; ui_tooltip = "Scale of the local contrast. Larger = broader, softer pop."; > = 40.0;
+
+// ============================
 // SHARPEN & GRAIN
 // ============================
 uniform bool  EnableSharpen < ui_type = "checkbox"; ui_label = "Enable Sharpen"; > = true;

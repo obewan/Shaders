@@ -801,6 +801,36 @@ float ComputeExposure()
 // ============================
 // SHARPEN & GRAIN (display space)
 // ============================
+// Local contrast ("clarity"): boost each pixel's luminance against its large-
+// radius local average, weighted to midtones. Adds a crisp, near-HDR pop to
+// textures that global contrast can't, without flattening colour. `focus`
+// suppresses it in out-of-focus (DoF) regions.
+float3 ApplyClarity(float2 uv, float3 c, float focus)
+{
+    static const float2 RING[6] =
+    {
+        float2( 1.0, 0.0), float2( 0.5,  0.86603), float2(-0.5,  0.86603),
+        float2(-1.0, 0.0), float2(-0.5, -0.86603), float2( 0.5, -0.86603)
+    };
+
+    float2 rad = ReShade::PixelSize * ClarityRadius;
+    float center = Luma(tex2D(CompositeSampler, uv).rgb);
+    float sum = center;
+    float wsum = 1.0;
+
+    [unroll]
+    for (int i = 0; i < 6; ++i)
+    {
+        sum += Luma(tex2D(CompositeSampler, uv + RING[i] * rad * 0.55).rgb) * 0.7;
+        sum += Luma(tex2D(CompositeSampler, uv + RING[i] * rad).rgb) * 0.4;
+        wsum += 1.1;
+    }
+
+    float detail = center - sum / wsum;
+    float mid = 4.0 * saturate(center) * (1.0 - saturate(center)); // midtone weight
+    return saturate(c + detail * ClarityAmount * mid * focus);
+}
+
 // Contrast Adaptive Sharpening (AMD FidelityFX CAS, simplified): the sharpening
 // amount adapts to local contrast, so flat detail is sharpened but strong edges
 // are spared the haloes/crunch of a plain unsharp mask. Returned as a detail add
@@ -1086,7 +1116,8 @@ float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
         focus = 1.0 - coc; // don't sharpen out-of-focus regions
     }
 
-    // Sharpen & grain (display space)
+    // Local contrast, then sharpen & grain (display space)
+    if (EnableClarity) c = ApplyClarity(uv, c, focus);
     if (EnableSharpen) c = SharpenPass(uv, c, focus);
     if (EnableGrain)   c = ApplyGrain(c, uv);
 
