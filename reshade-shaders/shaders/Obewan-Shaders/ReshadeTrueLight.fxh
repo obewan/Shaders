@@ -113,6 +113,11 @@ sampler DoFRawSampler { Texture = DoFRawTex; MinFilter = LINEAR; MagFilter = LIN
 texture2D DoFBlurTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA8; };
 sampler DoFBlurSampler { Texture = DoFBlurTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
 
+// Fully processed scene (AO/contact/exposure/SSR/bloom/tonemap) BEFORE DoF, so
+// DoF blurs the finished image instead of the raw backbuffer.
+texture2D CompositeTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA8; };
+sampler CompositeSampler { Texture = CompositeTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
+
 // ============================
 // BLUE-NOISE
 // Place BlueNoise.png in reshade-shaders/Textures. Default off to avoid load failures.
@@ -142,6 +147,9 @@ uniform int   AOSamples      < ui_type = "slider"; ui_min = 4;    ui_max = 12;  
 uniform float AOStrength     < ui_type = "slider"; ui_min = 0.0;  ui_max = 4.0;  ui_step = 0.01; ui_label = "AO Strength"; > = 1.6;
 uniform float AOPower        < ui_type = "slider"; ui_min = 0.5;  ui_max = 4.0;  ui_step = 0.05; ui_label = "AO Contrast (power)"; ui_tooltip = "Higher = deeper, more contrasty occlusion."; > = 2.0;
 uniform float AOBias         < ui_type = "slider"; ui_min = 0.0;  ui_max = 0.5;  ui_step = 0.005; ui_label = "AO Bias"; ui_tooltip = "Raise to reduce self-occlusion / flat-surface noise."; > = 0.03;
+uniform float AOFadeStart    < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "AO Fade Start (depth)"; ui_tooltip = "Normalized depth where AO begins to fade out."; > = 0.6;
+uniform float AOFadeEnd      < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "AO Fade End (depth)"; ui_tooltip = "Normalized depth where AO is fully gone. Lower this if distant terrain (mountains) still shows AO noise."; > = 0.9;
+uniform float AODistantRadius < ui_type = "slider"; ui_min = 0.0; ui_max = 0.1; ui_step = 0.002; ui_label = "AO Distant Radius"; ui_tooltip = "Grows the AO radius with distance so far objects keep a stable, less-noisy AO footprint (XeGTAO-style). 0 = off. An alternative to fading AO out."; > = 0.0;
 
 // ============================
 // CONTACT SHADOWS
@@ -168,7 +176,7 @@ uniform float SSRGlossiness   < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;
 uniform bool  EnableDoF      < ui_type = "checkbox"; ui_label = "Enable DoF"; > = true;
 uniform float FocalDistance  < ui_type = "slider"; ui_min = 0.0;  ui_max = 500.0; ui_step = 1.0; ui_label = "Focal Distance (world)"; > = 30.0;
 uniform float FocalRange     < ui_type = "slider"; ui_min = 1.0;  ui_max = 300.0; ui_step = 1.0; ui_label = "In-focus Range (world)"; > = 40.0;
-uniform float MaxCoCRadius   < ui_type = "slider"; ui_min = 1.0;  ui_max = 32.0;  ui_step = 1.0; ui_label = "Max CoC Radius (px)"; > = 12.0;
+uniform float MaxCoCRadius   < ui_type = "slider"; ui_min = 0.5;  ui_max = 16.0;  ui_step = 0.25; ui_label = "Max CoC Radius (px)"; ui_tooltip = "Maximum blur radius in pixels. Small values (1-3) give subtle defocus; raise for stronger bokeh."; > = 3.0;
 
 // ============================
 // BLOOM

@@ -118,7 +118,9 @@ float ComputeAO(float2 uv)
     float3 n = EstimateNormal(uv);
 
     int samples = clamp(AOSamples, 4, AO_MAX_SAMPLES);
-    float2 uvRadius = ViewRadiusToUV(p, AORadius);
+    // Optionally grow the radius with distance to keep a stable screen footprint.
+    float effRadius = AORadius + max(-p.z, 0.0) * AODistantRadius;
+    float2 uvRadius = ViewRadiusToUV(p, effRadius);
     float rnd = JitterUV(uv).x; // per-pixel offset to break up banding
 
     float occlusion = 0.0;
@@ -143,13 +145,14 @@ float ComputeAO(float2 uv)
         // Occluded when the neighbour rises above the tangent plane (beyond bias),
         // attenuated so distant samples count less.
         float nd = dot(n, v / dist) - AOBias / max(dist, 1e-3);
-        float atten = saturate(1.0 - dist / AORadius);
+        float atten = saturate(1.0 - dist / effRadius);
         occlusion += saturate(nd) * atten;
     }
 
     occlusion /= float(samples);
-    float ao = saturate(1.0 - occlusion * AOStrength);
-    return pow(ao, AOPower);
+    float ao = pow(saturate(1.0 - occlusion * AOStrength), AOPower);
+    // Fade AO out at distance — far depth has poor precision and produces noise.
+    return lerp(ao, 1.0, saturate((d - AOFadeStart) / max(1e-4, AOFadeEnd - AOFadeStart)));
 }
 
 // GTAO/HBAO-style: march along screen-space slices and track the highest
@@ -163,7 +166,8 @@ float ComputeGTAO(float2 uv)
     float3 p = ReconstructViewPos(uv);
     float3 n = EstimateNormal(uv);
 
-    float2 radiusUV = ViewRadiusToUV(p, AORadius);
+    float effRadius = AORadius + max(-p.z, 0.0) * AODistantRadius;
+    float2 radiusUV = ViewRadiusToUV(p, effRadius);
     float rnd = JitterUV(uv).x + 0.5; // [0,1] slice rotation
 
     const int SLICES = 4;
@@ -190,7 +194,7 @@ float ComputeGTAO(float2 uv)
                 float3 v = ReconstructViewPos(uvA) - p;
                 float l = length(v);
                 if (l > 1e-4)
-                    hPlus = max(hPlus, (dot(n, v) / l - AOBias) * saturate(1.0 - l / AORadius));
+                    hPlus = max(hPlus, (dot(n, v) / l - AOBias) * saturate(1.0 - l / effRadius));
             }
 
             float2 uvB = uv - off;
@@ -200,7 +204,7 @@ float ComputeGTAO(float2 uv)
                 float3 v = ReconstructViewPos(uvB) - p;
                 float l = length(v);
                 if (l > 1e-4)
-                    hMinus = max(hMinus, (dot(n, v) / l - AOBias) * saturate(1.0 - l / AORadius));
+                    hMinus = max(hMinus, (dot(n, v) / l - AOBias) * saturate(1.0 - l / effRadius));
             }
         }
 
@@ -208,8 +212,9 @@ float ComputeGTAO(float2 uv)
     }
 
     occlusion /= float(SLICES);
-    float ao = saturate(1.0 - occlusion * AOStrength);
-    return pow(ao, AOPower);
+    float ao = pow(saturate(1.0 - occlusion * AOStrength), AOPower);
+    // Fade AO out at distance — far depth has poor precision and produces noise.
+    return lerp(ao, 1.0, saturate((d - AOFadeStart) / max(1e-4, AOFadeEnd - AOFadeStart)));
 }
 
 // Depth-aware blur / upsample (reads the half-res AO target).
@@ -466,7 +471,8 @@ float4 DoF_Gather(float2 uv, float2 dir)
 
     int taps = DOF_MAX_TAPS;
     int halfT = taps / 2;
-    float2 stepDir = dir * (cocPx / max(1.0, float(halfT)));
+    // cocPx is in pixels -> convert the per-tap step to UV space.
+    float2 stepDir = dir * (cocPx / max(1.0, float(halfT))) * ReShade::PixelSize;
 
     float centerD = GetDepth(uv);
     float3 accum = 0.0;
@@ -480,7 +486,7 @@ float4 DoF_Gather(float2 uv, float2 dir)
         float sd = GetDepth(sUV);
         float dw = exp(-abs(centerD - sd) * 30.0);
         float w = DOF_WEIGHTS[i] * dw;
-        accum += tex2D(BackBuffer, sUV).rgb * w;
+        accum += tex2D(CompositeSampler, sUV).rgb * w;
         wsum += w;
     }
 
@@ -603,17 +609,20 @@ float ComputeExposure()
 // ============================
 // SHARPEN & GRAIN (display space)
 // ============================
-float3 SharpenPass(float2 uv, float3 c)
+// Unsharp mask on the processed composite. `focus` (0..1) suppresses sharpening
+// of out-of-focus (DoF-blurred) regions.
+float3 SharpenPass(float2 uv, float3 c, float focus)
 {
     float2 t = ReShade::PixelSize;
-    float3 n = tex2D(BackBuffer, uv + float2(0, -t.y)).rgb;
-    float3 s = tex2D(BackBuffer, uv + float2(0,  t.y)).rgb;
-    float3 e = tex2D(BackBuffer, uv + float2( t.x, 0)).rgb;
-    float3 w = tex2D(BackBuffer, uv + float2(-t.x, 0)).rgb;
-    float3 blur = (tex2D(BackBuffer, uv).rgb + n + s + e + w) / 5.0;
-    float3 detail = tex2D(BackBuffer, uv).rgb - blur;
+    float3 ctr = tex2D(CompositeSampler, uv).rgb;
+    float3 n = tex2D(CompositeSampler, uv + float2(0, -t.y)).rgb;
+    float3 s = tex2D(CompositeSampler, uv + float2(0,  t.y)).rgb;
+    float3 e = tex2D(CompositeSampler, uv + float2( t.x, 0)).rgb;
+    float3 w = tex2D(CompositeSampler, uv + float2(-t.x, 0)).rgb;
+    float3 blur = (ctr + n + s + e + w) / 5.0;
+    float3 detail = ctr - blur;
     float weight = saturate((Luma(c) - 0.2) * 1.5);
-    return saturate(c + detail * Sharpness * weight);
+    return saturate(c + detail * Sharpness * weight * focus);
 }
 
 float3 ApplyGrain(float3 c, float2 uv)
@@ -680,18 +689,19 @@ float4 PS_SSRBlur(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 
 float4 PS_DoFGatherH(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
-    if (!EnableDoF) return float4(tex2D(BackBuffer, uv).rgb, 0.0);
+    if (!EnableDoF) return float4(tex2D(CompositeSampler, uv).rgb, 0.0);
     return DoF_Gather(uv, float2(1.0, 0.0));
 }
 float4 PS_DoFGatherV(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
-    if (!EnableDoF) return float4(tex2D(BackBuffer, uv).rgb, 0.0);
+    if (!EnableDoF) return float4(tex2D(DoFRawSampler, uv).rgb, 0.0);
     // Vertical gather over the horizontally-pre-blurred buffer.
     float cocNorm = tex2D(DoFRawSampler, uv).a;
     float cocPx = cocNorm * MaxCoCRadius;
     int taps = DOF_MAX_TAPS;
     int halfT = taps / 2;
-    float2 stepDir = float2(0.0, 1.0) * (cocPx / max(1.0, float(halfT)));
+    // cocPx is in pixels -> convert the per-tap step to UV space.
+    float2 stepDir = float2(0.0, 1.0) * (cocPx / max(1.0, float(halfT))) * ReShade::PixelSize;
 
     float centerD = GetDepth(uv);
     float3 accum = 0.0;
@@ -711,23 +721,11 @@ float4 PS_DoFGatherV(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 }
 
 // ============================
-// MAIN PASS
+// COMPOSITE PASS — full processed scene (linear effects -> tonemap -> sRGB).
+// Written to CompositeTex so DoF can blur the finished image, not the raw scene.
 // ============================
-float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+float4 PS_Composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
-    // ---- Debug visualizers ----
-    if (DebugMode != 0)
-    {
-        if (DebugMode == 1) { float d = GetDepth(uv); return float4(d.xxx, 1.0); }
-        if (DebugMode == 2) { float3 n = EstimateNormal(uv); return float4(n * 0.5 + 0.5, 1.0); }
-        if (DebugMode == 3) { float3 p = ReconstructViewPos(uv); return float4(frac(abs(p) * 0.1), 1.0); }
-        if (DebugMode == 4) { float coc = ComputeCoCNorm(uv); return float4(coc.xxx, 1.0); }
-        if (DebugMode == 5) { float ao = tex2D(AOBlurSampler, uv).r; return float4(ao.xxx, 1.0); }
-        if (DebugMode == 6) { float cs = tex2D(ContactBlurSampler, uv).r; return float4(cs.xxx, 1.0); }
-        if (DebugMode == 7) { float4 s = tex2D(SSRBlurSampler, uv); return float4(s.rgb * s.a, 1.0); }
-        if (DebugMode == 8) { return float4(tex2D(BloomMip2Sampler, uv).rgb, 1.0); }
-    }
-
     float3 c = ToLinear(tex2D(BackBuffer, uv).rgb);
 
     // AO (linear, pre-tonemap)
@@ -756,15 +754,41 @@ float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
     c = TonemapACES(c);
     c = ToSRGB(c);
 
-    // DoF (display space; lerp toward the blurred buffer by CoC)
+    return float4(saturate(c), 1.0);
+}
+
+// ============================
+// MAIN PASS — DoF over the composite, then sharpen / grain / dither / output.
+// ============================
+float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+{
+    // ---- Debug visualizers ----
+    if (DebugMode != 0)
+    {
+        if (DebugMode == 1) { float d = GetDepth(uv); return float4(d.xxx, 1.0); }
+        if (DebugMode == 2) { float3 n = EstimateNormal(uv); return float4(n * 0.5 + 0.5, 1.0); }
+        if (DebugMode == 3) { float3 p = ReconstructViewPos(uv); return float4(frac(abs(p) * 0.1), 1.0); }
+        if (DebugMode == 4) { float coc = ComputeCoCNorm(uv); return float4(coc.xxx, 1.0); }
+        if (DebugMode == 5) { float ao = tex2D(AOBlurSampler, uv).r; return float4(ao.xxx, 1.0); }
+        if (DebugMode == 6) { float cs = tex2D(ContactBlurSampler, uv).r; return float4(cs.xxx, 1.0); }
+        if (DebugMode == 7) { float4 s = tex2D(SSRBlurSampler, uv); return float4(s.rgb * s.a, 1.0); }
+        if (DebugMode == 8) { return float4(tex2D(BloomMip2Sampler, uv).rgb, 1.0); }
+    }
+
+    float3 c = tex2D(CompositeSampler, uv).rgb;
+
+    // Depth of Field: blend the sharp composite toward the DoF-blurred composite.
+    float focus = 1.0;
     if (EnableDoF)
     {
         float4 dof = tex2D(DoFBlurSampler, uv);
-        c = lerp(c, dof.rgb, saturate(dof.a));
+        float coc = saturate(dof.a);
+        c = lerp(c, dof.rgb, coc);
+        focus = 1.0 - coc; // don't sharpen out-of-focus regions
     }
 
     // Sharpen & grain (display space)
-    if (EnableSharpen) c = SharpenPass(uv, c);
+    if (EnableSharpen) c = SharpenPass(uv, c, focus);
     if (EnableGrain)   c = ApplyGrain(c, uv);
 
     // Dither last, just before 8-bit quantization, to suppress banding.
@@ -796,6 +820,8 @@ technique ReshadeTrueLight
     pass BloomDown1     { VertexShader = PostProcessVS; PixelShader = PS_BloomDown1;     RenderTarget = BloomMip1; }
     pass BloomBlurH     { VertexShader = PostProcessVS; PixelShader = PS_BloomBlurH;     RenderTarget = BloomMip1Temp; }
     pass BloomBlurV     { VertexShader = PostProcessVS; PixelShader = PS_BloomBlurV;     RenderTarget = BloomMip2; }
+
+    pass Composite      { VertexShader = PostProcessVS; PixelShader = PS_Composite;      RenderTarget = CompositeTex; }
 
     pass DoFGatherH     { VertexShader = PostProcessVS; PixelShader = PS_DoFGatherH;     RenderTarget = DoFRawTex; }
     pass DoFGatherV     { VertexShader = PostProcessVS; PixelShader = PS_DoFGatherV;     RenderTarget = DoFBlurTex; }
