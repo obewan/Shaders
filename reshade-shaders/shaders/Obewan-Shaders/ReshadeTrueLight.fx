@@ -1,13 +1,16 @@
 //===========================================================================
 // SKYRIM REALISTIC PIPELINE — ReshadeTrueLight
 // Author: Obewan (https://github.com/obewan)
-// Version: 0.1.0
+// Version: 1.0.0
 // Requirement:
-//     - BlueNoise.png in reshade-shaders/Textures (only if UseBlueNoise = true)
+//     - bluenoise.png in reshade-shaders/textures (only if Use Blue Noise = true)
 //     - a depth buffer correctly set (check it using the DisplayDepth shader)
+//     - a separate AA shader (e.g. CShade DLAA or SMAA), ordered before this one
 //
-// v0.1.0: single-frame pipeline (temporal reprojection removed). All effects
-// use spatial bilateral filtering. See the header for the rationale.
+// Single-frame pipeline (no temporal reprojection): ReShade can't supply per-
+// frame view/projection matrices, so all effects are single-frame with spatial
+// bilateral filtering. The only cross-frame state is the 1x1 luminance/light
+// adaptation ping-pong (no reprojection needed).
 //================================================================================
 
 #include "ReshadeTrueLight.fxh"

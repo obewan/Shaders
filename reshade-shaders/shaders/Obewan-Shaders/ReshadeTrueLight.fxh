@@ -1,12 +1,12 @@
 //===========================================================================
 // SKYRIM REALISTIC PIPELINE — ReshadeTrueLight Header
 // Author: Obewan (https://github.com/obewan)
-// Version: 0.1.0
+// Version: 1.0.0
 // Requirements
-//   - BlueNoise.png in reshade-shaders/Textures if UseBlueNoise = true
+//   - bluenoise.png in reshade-shaders/textures if Use Blue Noise = true
 //   - A working depth buffer (verify with the stock DisplayDepth shader)
 //
-// NOTE (v0.1.0): temporal reprojection has been removed. Stock ReShade cannot
+// NOTE: temporal reprojection has been removed. Stock ReShade cannot
 // feed per-frame view/projection matrices into a uniform, so the previous
 // reprojection path could never work without a custom C++ addon. All effects
 // are now single-frame and rely on spatial bilateral filtering for stability.
