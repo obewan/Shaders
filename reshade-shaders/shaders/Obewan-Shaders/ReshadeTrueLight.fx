@@ -674,12 +674,76 @@ float3 ApplyDither(float3 c, float2 uv)
 }
 
 // ============================
-// TONEMAP (ACES approximation)
+// TONEMAP (selectable operator) — each returns linear; ToSRGB is applied after.
 // ============================
-float3 TonemapACES(float3 x)
+float3 Tonemap_ACES(float3 x) // Narkowicz ACES approximation
 {
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
+
+float3 Hable(float3 x)
+{
+    const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30;
+    return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+}
+float3 Tonemap_Hable(float3 c) // Uncharted 2 filmic
+{
+    float3 curr = Hable(c * 2.0);
+    float3 whiteScale = 1.0 / Hable(TonemapWhite.xxx);
+    return saturate(curr * whiteScale);
+}
+
+float3 Tonemap_Reinhard(float3 c) // extended Reinhard with white point
+{
+    return saturate((c * (1.0 + c / (TonemapWhite * TonemapWhite))) / (1.0 + c));
+}
+
+// AgX (minimal implementation, Benjamin Wrensch / Troy Sobotka). The sigmoid
+// output is display-encoded; the pow(2.2) here cancels with the later ToSRGB so
+// AgX displays correctly through the shared encode path.
+float3 agxContrast(float3 x)
+{
+    float3 x2 = x * x;
+    float3 x4 = x2 * x2;
+    return  15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4
+          - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+float3 Tonemap_AgX(float3 val)
+{
+    const float3x3 agx_mat = float3x3(
+        0.842479062253094, 0.0423282422610123, 0.0423756549057051,
+        0.0784335999999992, 0.878468636469772, 0.0784336,
+        0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+    const float3x3 agx_mat_inv = float3x3(
+         1.19687900512017,  -0.0528968517574562, -0.0529716355144438,
+        -0.0980208811401368, 1.15190312990417,   -0.0980434501171241,
+        -0.0990297440797205,-0.0989611768448433,  1.15107367264116);
+    const float min_ev = -12.47393, max_ev = 4.026069;
+
+    val = mul(val, agx_mat);                          // input transform
+    val = clamp(log2(max(val, 1e-10)), min_ev, max_ev);
+    val = (val - min_ev) / (max_ev - min_ev);
+    val = agxContrast(val);                           // sigmoid
+    val = mul(val, agx_mat_inv);                      // output transform
+    return pow(max(val, 0.0), 2.2);                   // -> linear (cancels ToSRGB)
+}
+
+float3 ApplyTonemap(float3 c)
+{
+    if      (TonemapOperator == 1) c = Tonemap_AgX(c);
+    else if (TonemapOperator == 2) c = Tonemap_Hable(c);
+    else if (TonemapOperator == 3) c = Tonemap_Reinhard(c);
+    else                           c = Tonemap_ACES(c);
+    return ToSRGB(c);
+}
+
+// Simple grading in display space (neutral at defaults).
+float3 ApplyGrade(float3 c)
+{
+    c = lerp(Luma(c).xxx, c, Saturation);     // saturation
+    c = saturate((c - 0.5) * Contrast + 0.5); // contrast around mid-grey
+    return c;
 }
 
 // ============================
@@ -779,9 +843,9 @@ float4 PS_Composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     if (EnableBloom)
         c += tex2D(BloomU0s, uv).rgb * BloomStrength;
 
-    // Tonemap + encode
-    c = TonemapACES(c);
-    c = ToSRGB(c);
+    // Tonemap + encode (selectable operator), then grading
+    c = ApplyTonemap(c);
+    c = ApplyGrade(c);
 
     return float4(saturate(c), 1.0);
 }

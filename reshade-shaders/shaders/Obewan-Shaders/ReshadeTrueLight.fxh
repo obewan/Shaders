@@ -139,6 +139,14 @@ uniform float ExposureMax  < ui_type = "slider"; ui_min = 0.5;  ui_max = 8.0;  u
 uniform float ManualExposure < ui_type = "slider"; ui_min = -4.0; ui_max = 4.0; ui_step = 0.1; ui_label = "Manual Exposure (EV, when auto off)"; > = 0.0;
 
 // ============================
+// TONEMAP & GRADING
+// ============================
+uniform int   TonemapOperator < ui_type = "combo"; ui_items = "ACES\0AgX\0Hable (Uncharted 2)\0Reinhard\0"; ui_label = "Tonemap Operator"; ui_tooltip = "AgX handles bright saturated colours (fire, sunsets, magic) more gracefully than ACES."; > = 0;
+uniform float TonemapWhite    < ui_type = "slider"; ui_min = 1.0; ui_max = 16.0; ui_step = 0.1; ui_label = "White Point (Hable/Reinhard)"; > = 4.0;
+uniform float Contrast        < ui_type = "slider"; ui_min = 0.5; ui_max = 2.0;  ui_step = 0.01; ui_label = "Contrast"; > = 1.0;
+uniform float Saturation      < ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01; ui_label = "Saturation"; > = 1.0;
+
+// ============================
 // AO
 // ============================
 uniform bool  EnableAO       < ui_type = "checkbox"; ui_label = "Enable AO"; > = true;
