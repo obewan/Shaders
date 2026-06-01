@@ -497,53 +497,79 @@ float4 DoF_Gather(float2 uv, float2 dir)
 }
 
 // ============================
-// BLOOM (threshold in linear space, ping-pong + small mip chain)
+// BLOOM (progressive pyramid: soft-knee prefilter -> 13-tap downsample chain
+// -> 9-tap tent upsample chain, accumulating energy at every scale).
 // ============================
-float4 PS_BloomDown0(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+
+// Unreal-style soft-knee threshold: smooth ramp around the threshold instead of
+// a hard cutoff, which avoids flicker/popping on bright edges.
+float3 BloomPrefilter(float3 c)
 {
-    float3 c = ToLinear(tex2D(BackBuffer, uv).rgb);
-    float l = Luma(c);
-    float mask = saturate(l - BloomThreshold) / max(1e-3, 1.0 - BloomThreshold);
-    return float4(c * mask, 1.0);
+    float br = max(c.r, max(c.g, c.b));
+    float knee = max(BloomThreshold * BloomSoftKnee, 1e-4);
+    float soft = clamp(br - BloomThreshold + knee, 0.0, 2.0 * knee);
+    soft = soft * soft / (4.0 * knee);
+    float contrib = max(soft, br - BloomThreshold) / max(br, 1e-4);
+    return c * contrib;
 }
 
-float4 PS_BloomPingPong(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+// 13-tap downsample (overlapping 4-sample boxes) — smooth, firefly-resistant.
+float3 Downsample13(sampler s, float2 uv, float2 t)
 {
-    return float4(tex2D(BloomMip0ASampler, uv).rgb, 1.0);
+    float3 a = tex2D(s, uv + t * float2(-2, -2)).rgb;
+    float3 b = tex2D(s, uv + t * float2( 0, -2)).rgb;
+    float3 c = tex2D(s, uv + t * float2( 2, -2)).rgb;
+    float3 d = tex2D(s, uv + t * float2(-2,  0)).rgb;
+    float3 e = tex2D(s, uv + t * float2( 0,  0)).rgb;
+    float3 f = tex2D(s, uv + t * float2( 2,  0)).rgb;
+    float3 g = tex2D(s, uv + t * float2(-2,  2)).rgb;
+    float3 h = tex2D(s, uv + t * float2( 0,  2)).rgb;
+    float3 i = tex2D(s, uv + t * float2( 2,  2)).rgb;
+    float3 j = tex2D(s, uv + t * float2(-1, -1)).rgb;
+    float3 k = tex2D(s, uv + t * float2( 1, -1)).rgb;
+    float3 l = tex2D(s, uv + t * float2(-1,  1)).rgb;
+    float3 m = tex2D(s, uv + t * float2( 1,  1)).rgb;
+    float3 r = (j + k + l + m) * 0.125;       // center box (weight 0.5)
+    r += (a + b + d + e) * 0.03125;           // four corner boxes (weight 0.125 each)
+    r += (b + c + e + f) * 0.03125;
+    r += (d + e + g + h) * 0.03125;
+    r += (e + f + h + i) * 0.03125;
+    return r;
 }
 
-float4 PS_BloomDown1(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+// 9-tap tent upsample filter.
+float3 Upsample9(sampler s, float2 uv, float2 t)
 {
-    float2 t = ReShade::PixelSize * 2.0;
-    float3 sum = 0.0;
-    sum += tex2D(BloomMip0BSampler, uv + float2( t.x, 0)).rgb;
-    sum += tex2D(BloomMip0BSampler, uv + float2(-t.x, 0)).rgb;
-    sum += tex2D(BloomMip0BSampler, uv + float2(0,  t.y)).rgb;
-    sum += tex2D(BloomMip0BSampler, uv + float2(0, -t.y)).rgb;
-    return float4(sum * 0.25, 1.0);
+    float3 a = tex2D(s, uv + t * float2(-1,  1)).rgb;
+    float3 b = tex2D(s, uv + t * float2( 0,  1)).rgb;
+    float3 c = tex2D(s, uv + t * float2( 1,  1)).rgb;
+    float3 d = tex2D(s, uv + t * float2(-1,  0)).rgb;
+    float3 e = tex2D(s, uv + t * float2( 0,  0)).rgb;
+    float3 f = tex2D(s, uv + t * float2( 1,  0)).rgb;
+    float3 g = tex2D(s, uv + t * float2(-1, -1)).rgb;
+    float3 h = tex2D(s, uv + t * float2( 0, -1)).rgb;
+    float3 i = tex2D(s, uv + t * float2( 1, -1)).rgb;
+    return (e * 4.0 + (b + d + f + h) * 2.0 + (a + c + g + i)) * (1.0 / 16.0);
 }
 
-float4 PS_BloomBlurH(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+float4 PS_BloomPrefilter(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
-    float2 r = ReShade::PixelSize * BloomRadius * 2.0;
-    float3 c0 = tex2D(BloomMip1Sampler, uv).rgb;
-    float3 c1 = tex2D(BloomMip1Sampler, uv + float2(r.x, 0)).rgb;
-    float3 c2 = tex2D(BloomMip1Sampler, uv - float2(r.x, 0)).rgb;
-    float3 c3 = tex2D(BloomMip1Sampler, uv + float2(2.0 * r.x, 0)).rgb;
-    float3 c4 = tex2D(BloomMip1Sampler, uv - float2(2.0 * r.x, 0)).rgb;
-    return float4(0.204164 * c0 + 0.304005 * (c1 + c2) + 0.093827 * (c3 + c4), 1.0);
+    float3 c = ToLinear(Downsample13(BackBuffer, uv, ReShade::PixelSize));
+    return float4(BloomPrefilter(c), 1.0);
 }
 
-float4 PS_BloomBlurV(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
-{
-    float2 r = ReShade::PixelSize * BloomRadius * 2.0;
-    float3 c0 = tex2D(BloomMip1TempSampler, uv).rgb;
-    float3 c1 = tex2D(BloomMip1TempSampler, uv + float2(0, r.y)).rgb;
-    float3 c2 = tex2D(BloomMip1TempSampler, uv - float2(0, r.y)).rgb;
-    float3 c3 = tex2D(BloomMip1TempSampler, uv + float2(0, 2.0 * r.y)).rgb;
-    float3 c4 = tex2D(BloomMip1TempSampler, uv - float2(0, 2.0 * r.y)).rgb;
-    return float4(0.204164 * c0 + 0.304005 * (c1 + c2) + 0.093827 * (c3 + c4), 1.0);
-}
+float4 PS_BloomDown1(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Downsample13(BloomD0s, uv, ReShade::PixelSize *  2.0), 1.0); }
+float4 PS_BloomDown2(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Downsample13(BloomD1s, uv, ReShade::PixelSize *  4.0), 1.0); }
+float4 PS_BloomDown3(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Downsample13(BloomD2s, uv, ReShade::PixelSize *  8.0), 1.0); }
+float4 PS_BloomDown4(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Downsample13(BloomD3s, uv, ReShade::PixelSize * 16.0), 1.0); }
+float4 PS_BloomDown5(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Downsample13(BloomD4s, uv, ReShade::PixelSize * 32.0), 1.0); }
+
+// Upsample chain: each level adds its own downsample mip to the upsampled smaller mip.
+float4 PS_BloomUp4(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(tex2D(BloomD4s, uv).rgb + Upsample9(BloomD5s, uv, ReShade::PixelSize * 64.0 * BloomRadius), 1.0); }
+float4 PS_BloomUp3(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(tex2D(BloomD3s, uv).rgb + Upsample9(BloomU4s, uv, ReShade::PixelSize * 32.0 * BloomRadius), 1.0); }
+float4 PS_BloomUp2(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(tex2D(BloomD2s, uv).rgb + Upsample9(BloomU3s, uv, ReShade::PixelSize * 16.0 * BloomRadius), 1.0); }
+float4 PS_BloomUp1(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(tex2D(BloomD1s, uv).rgb + Upsample9(BloomU2s, uv, ReShade::PixelSize *  8.0 * BloomRadius), 1.0); }
+float4 PS_BloomUp0(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(tex2D(BloomD0s, uv).rgb + Upsample9(BloomU1s, uv, ReShade::PixelSize *  4.0 * BloomRadius), 1.0); }
 
 // ============================
 // EYE ADAPTATION (instant auto-exposure)
@@ -751,7 +777,7 @@ float4 PS_Composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 
     // Bloom (linear, additive)
     if (EnableBloom)
-        c += tex2D(BloomMip2Sampler, uv).rgb * BloomStrength;
+        c += tex2D(BloomU0s, uv).rgb * BloomStrength;
 
     // Tonemap + encode
     c = TonemapACES(c);
@@ -775,7 +801,7 @@ float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
         if (DebugMode == 5) { float ao = tex2D(AOBlurSampler, uv).r; return float4(ao.xxx, 1.0); }
         if (DebugMode == 6) { float cs = tex2D(ContactBlurSampler, uv).r; return float4(cs.xxx, 1.0); }
         if (DebugMode == 7) { float4 s = tex2D(SSRBlurSampler, uv); return float4(s.rgb * s.a, 1.0); }
-        if (DebugMode == 8) { return float4(tex2D(BloomMip2Sampler, uv).rgb, 1.0); }
+        if (DebugMode == 8) { return float4(tex2D(BloomU0s, uv).rgb, 1.0); }
     }
 
     float3 c = tex2D(CompositeSampler, uv).rgb;
@@ -818,11 +844,17 @@ technique ReshadeTrueLight
     pass SSRCompute     { VertexShader = PostProcessVS; PixelShader = PS_SSRCompute;     RenderTarget = SSRRawTex; }
     pass SSRBlur        { VertexShader = PostProcessVS; PixelShader = PS_SSRBlur;        RenderTarget = SSRBlurTex; }
 
-    pass BloomDown0     { VertexShader = PostProcessVS; PixelShader = PS_BloomDown0;     RenderTarget = BloomMip0A; }
-    pass BloomPingPong  { VertexShader = PostProcessVS; PixelShader = PS_BloomPingPong;  RenderTarget = BloomMip0B; }
-    pass BloomDown1     { VertexShader = PostProcessVS; PixelShader = PS_BloomDown1;     RenderTarget = BloomMip1; }
-    pass BloomBlurH     { VertexShader = PostProcessVS; PixelShader = PS_BloomBlurH;     RenderTarget = BloomMip1Temp; }
-    pass BloomBlurV     { VertexShader = PostProcessVS; PixelShader = PS_BloomBlurV;     RenderTarget = BloomMip2; }
+    pass BloomPrefilter { VertexShader = PostProcessVS; PixelShader = PS_BloomPrefilter; RenderTarget = BloomD0; }
+    pass BloomDown1     { VertexShader = PostProcessVS; PixelShader = PS_BloomDown1;     RenderTarget = BloomD1; }
+    pass BloomDown2     { VertexShader = PostProcessVS; PixelShader = PS_BloomDown2;     RenderTarget = BloomD2; }
+    pass BloomDown3     { VertexShader = PostProcessVS; PixelShader = PS_BloomDown3;     RenderTarget = BloomD3; }
+    pass BloomDown4     { VertexShader = PostProcessVS; PixelShader = PS_BloomDown4;     RenderTarget = BloomD4; }
+    pass BloomDown5     { VertexShader = PostProcessVS; PixelShader = PS_BloomDown5;     RenderTarget = BloomD5; }
+    pass BloomUp4       { VertexShader = PostProcessVS; PixelShader = PS_BloomUp4;       RenderTarget = BloomU4; }
+    pass BloomUp3       { VertexShader = PostProcessVS; PixelShader = PS_BloomUp3;       RenderTarget = BloomU3; }
+    pass BloomUp2       { VertexShader = PostProcessVS; PixelShader = PS_BloomUp2;       RenderTarget = BloomU2; }
+    pass BloomUp1       { VertexShader = PostProcessVS; PixelShader = PS_BloomUp1;       RenderTarget = BloomU1; }
+    pass BloomUp0       { VertexShader = PostProcessVS; PixelShader = PS_BloomUp0;       RenderTarget = BloomU0; }
 
     pass Composite      { VertexShader = PostProcessVS; PixelShader = PS_Composite;      RenderTarget = CompositeTex; }
 

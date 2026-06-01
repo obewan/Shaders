@@ -65,17 +65,19 @@ uniform float CameraFovY < ui_type = "slider"; ui_min = 30.0;  ui_max = 120.0;  
 texture2D BackBufferTex : COLOR;
 sampler BackBuffer { Texture = BackBufferTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
 
-// Bloom ping-pong & mips
-texture2D BloomMip0A { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = RGBA16F; };
-sampler BloomMip0ASampler { Texture = BloomMip0A; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
-texture2D BloomMip0B { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = RGBA16F; };
-sampler BloomMip0BSampler { Texture = BloomMip0B; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
-texture2D BloomMip1 { Width = BUFFER_WIDTH/4; Height = BUFFER_HEIGHT/4; Format = RGBA16F; };
-sampler BloomMip1Sampler { Texture = BloomMip1; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
-texture2D BloomMip1Temp { Width = BUFFER_WIDTH/4; Height = BUFFER_HEIGHT/4; Format = RGBA16F; };
-sampler BloomMip1TempSampler { Texture = BloomMip1Temp; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
-texture2D BloomMip2 { Width = BUFFER_WIDTH/8; Height = BUFFER_HEIGHT/8; Format = RGBA16F; };
-sampler BloomMip2Sampler { Texture = BloomMip2; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
+// Bloom pyramid (progressive down/up-sample, CoD/Jimenez style). RGBA16F, LINEAR.
+#define BLOOM_SAMP(s, t) sampler s { Texture = t; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
+texture2D BloomD0 { Width = BUFFER_WIDTH/2;  Height = BUFFER_HEIGHT/2;  Format = RGBA16F; }; BLOOM_SAMP(BloomD0s, BloomD0)
+texture2D BloomD1 { Width = BUFFER_WIDTH/4;  Height = BUFFER_HEIGHT/4;  Format = RGBA16F; }; BLOOM_SAMP(BloomD1s, BloomD1)
+texture2D BloomD2 { Width = BUFFER_WIDTH/8;  Height = BUFFER_HEIGHT/8;  Format = RGBA16F; }; BLOOM_SAMP(BloomD2s, BloomD2)
+texture2D BloomD3 { Width = BUFFER_WIDTH/16; Height = BUFFER_HEIGHT/16; Format = RGBA16F; }; BLOOM_SAMP(BloomD3s, BloomD3)
+texture2D BloomD4 { Width = BUFFER_WIDTH/32; Height = BUFFER_HEIGHT/32; Format = RGBA16F; }; BLOOM_SAMP(BloomD4s, BloomD4)
+texture2D BloomD5 { Width = BUFFER_WIDTH/64; Height = BUFFER_HEIGHT/64; Format = RGBA16F; }; BLOOM_SAMP(BloomD5s, BloomD5)
+texture2D BloomU0 { Width = BUFFER_WIDTH/2;  Height = BUFFER_HEIGHT/2;  Format = RGBA16F; }; BLOOM_SAMP(BloomU0s, BloomU0)
+texture2D BloomU1 { Width = BUFFER_WIDTH/4;  Height = BUFFER_HEIGHT/4;  Format = RGBA16F; }; BLOOM_SAMP(BloomU1s, BloomU1)
+texture2D BloomU2 { Width = BUFFER_WIDTH/8;  Height = BUFFER_HEIGHT/8;  Format = RGBA16F; }; BLOOM_SAMP(BloomU2s, BloomU2)
+texture2D BloomU3 { Width = BUFFER_WIDTH/16; Height = BUFFER_HEIGHT/16; Format = RGBA16F; }; BLOOM_SAMP(BloomU3s, BloomU3)
+texture2D BloomU4 { Width = BUFFER_WIDTH/32; Height = BUFFER_HEIGHT/32; Format = RGBA16F; }; BLOOM_SAMP(BloomU4s, BloomU4)
 
 // Luminance downsample (used for instant auto-exposure)
 texture2D LumCurrTex { Width = 64; Height = 64; Format = R16F; };
@@ -181,9 +183,10 @@ uniform float MaxCoCRadius   < ui_type = "slider"; ui_min = 0.5;  ui_max = 16.0;
 // BLOOM
 // ============================
 uniform bool  EnableBloom    < ui_type = "checkbox"; ui_label = "Enable Bloom"; > = true;
-uniform float BloomThreshold < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.01; ui_label = "Bloom Threshold (linear)"; > = 0.6;
-uniform float BloomStrength  < ui_type = "slider"; ui_min = 0.0; ui_max = 2.0; ui_step = 0.01; ui_label = "Bloom Strength"; > = 0.12;
-uniform float BloomRadius    < ui_type = "slider"; ui_min = 0.5; ui_max = 6.0; ui_step = 0.1;  ui_label = "Bloom Radius"; > = 2.0;
+uniform float BloomThreshold < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.01; ui_label = "Bloom Threshold (linear)"; ui_tooltip = "Brightness where bloom starts."; > = 0.7;
+uniform float BloomSoftKnee  < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.01; ui_label = "Bloom Soft Knee"; ui_tooltip = "Soft transition around the threshold (0 = hard cutoff, 1 = very soft). Reduces flicker/popping on bright edges."; > = 0.5;
+uniform float BloomStrength  < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.005; ui_label = "Bloom Strength"; > = 0.08;
+uniform float BloomRadius    < ui_type = "slider"; ui_min = 0.5; ui_max = 2.0; ui_step = 0.05; ui_label = "Bloom Spread"; ui_tooltip = "Width of the glow (scales the upsample tent)."; > = 1.0;
 
 // ============================
 // SHARPEN & GRAIN
