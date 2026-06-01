@@ -246,6 +246,8 @@ uniform float  FogDensity   < ui_category = "Fog"; ui_type = "slider"; ui_min = 
 uniform float  FogMax       < ui_category = "Fog"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;     ui_step = 0.001;  ui_label = "Fog Max"; ui_tooltip = "Maximum fog opacity at the far distance."; > = 0.005;
 uniform float  FogSunAmount < ui_category = "Fog"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;    ui_step = 0.01;   ui_label = "Fog Sun Glow"; ui_tooltip = "Forward scattering: fog brightens toward the sun (its on-screen position)."; > = 0.5;
 uniform float3 FogSunColor  < ui_category = "Fog"; ui_type = "color"; ui_label = "Fog Sun Color"; > = float3(1.0, 0.85, 0.6);
+uniform float  FogNightDim       < ui_category = "Fog"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "Fog Night Darkness"; ui_tooltip = "How dark the fog gets in dark scenes (1 = no darkening; lower = darker night fog). Fixes bright fog washing out far mountains at night."; > = 0.25;
+uniform float  FogNightThreshold < ui_category = "Fog"; ui_type = "slider"; ui_min = 0.01; ui_max = 0.30; ui_step = 0.01; ui_label = "Fog Night Threshold"; ui_tooltip = "Scene darkness (adapted luminance) below which the fog dims. Same gate as Purkinje."; > = 0.10;
 
 // ============================
 // LOCAL CONTRAST (clarity)

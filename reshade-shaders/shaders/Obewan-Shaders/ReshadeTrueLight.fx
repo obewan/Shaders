@@ -896,6 +896,13 @@ float3 ApplyFog(float2 uv, float3 c)
         float toLight = saturate(1.0 - length(uv - lp) * 1.2);
         fogCol = lerp(fogCol, ToLinear(FogSunColor), toLight * toLight * FogSunAmount);
     }
+
+    // Darken the fog in dark scenes (night) using the adapted scene luminance —
+    // the same gate as Purkinje — so bright haze doesn't wash out far mountains.
+    float adapt = tex2Dlod(AdaptSampler, float4(0.5, 0.5, 0, 0)).r;
+    float night = saturate(1.0 - adapt / max(FogNightThreshold, 1e-3));
+    fogCol *= lerp(1.0, FogNightDim, night);
+
     return lerp(c, fogCol, f);
 }
 
