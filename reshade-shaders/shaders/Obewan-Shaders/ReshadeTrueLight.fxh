@@ -141,7 +141,7 @@ uniform float ManualExposure < ui_type = "slider"; ui_min = -4.0; ui_max = 4.0; 
 // ============================
 // TONEMAP & GRADING
 // ============================
-uniform int   TonemapOperator < ui_type = "combo"; ui_items = "ACES\0AgX\0Hable (Uncharted 2)\0Reinhard\0"; ui_label = "Tonemap Operator"; ui_tooltip = "AgX handles bright saturated colours (fire, sunsets, magic) more gracefully than ACES."; > = 0;
+uniform int   TonemapOperator < ui_type = "combo"; ui_items = "ACES\0AgX\0Hable (Uncharted 2)\0Reinhard\0"; ui_label = "Tonemap Operator"; ui_tooltip = "AgX handles bright saturated colours (fire, sunsets, magic) more gracefully than ACES."; > = 1;
 uniform float TonemapWhite    < ui_type = "slider"; ui_min = 1.0; ui_max = 16.0; ui_step = 0.1; ui_label = "White Point (Hable/Reinhard)"; > = 4.0;
 uniform float Contrast        < ui_type = "slider"; ui_min = 0.5; ui_max = 2.0;  ui_step = 0.01; ui_label = "Contrast"; > = 1.0;
 uniform float Saturation      < ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01; ui_label = "Saturation"; > = 1.0;
