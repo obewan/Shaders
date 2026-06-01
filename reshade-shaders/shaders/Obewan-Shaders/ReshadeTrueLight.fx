@@ -257,35 +257,39 @@ float ComputeContact(float2 uv)
     float ndotl = saturate(dot(n, -L));
     if (ndotl < 0.05) return 1.0;
 
-    float stepLen = ContactMaxDist / 8.0;
-    float2 jitter = JitterUV(uv) * ReShade::PixelSize;
+    const int STEPS = 8;
+    float stepLen   = ContactMaxDist / float(STEPS);
+    float bias      = stepLen * 0.5;       // avoid self-occlusion
+    float thickness = ContactMaxDist;      // reject occluders far behind (background)
 
-    float3 samplePos = p;
+    // Static (non-animated) per-pixel start offset: staggers samples without the
+    // temporal flicker an animated jitter caused. The bilateral blur smooths the rest.
+    float jitter = Hash21(uv * float2(BUFFER_WIDTH, BUFFER_HEIGHT));
+    float3 samplePos = p - L * (stepLen * jitter);
+
     float occlusion = 0.0;
 
     [loop]
-    for (int i = 1; i <= 8; ++i)
+    for (int i = 1; i <= STEPS; ++i)
     {
-        samplePos += -L * stepLen;
+        samplePos -= L * stepLen; // march toward the light
 
-        float2 sampleUV = ProjectToUV(samplePos) + jitter;
-        if (sampleUV.x < 0.0 || sampleUV.x > 1.0 || sampleUV.y < 0.0 || sampleUV.y > 1.0) continue;
+        float2 sampleUV = ProjectToUV(samplePos);
+        if (sampleUV.x < 0.0 || sampleUV.x > 1.0 || sampleUV.y < 0.0 || sampleUV.y > 1.0) break;
 
         float sd = GetDepth(sampleUV);
         if (sd <= 0.0 || sd >= 1.0) continue;
 
-        float3 sp = ReconstructViewPos(sampleUV);
-        float distScene = length(sp - p);
-        float distRay   = length(samplePos - p);
-
-        if (distScene + stepLen * 0.25 < distRay * 0.98)
+        // Occluded when the scene surface sits in front of the ray, within a
+        // bounded thickness band (rejects background bleed at silhouettes).
+        float diff = length(samplePos) - length(ReconstructViewPos(sampleUV));
+        if (diff > bias && diff < thickness)
         {
-            float w = saturate(1.0 - distRay / ContactMaxDist);
-            occlusion += w;
+            float w = saturate(1.0 - length(samplePos - p) / ContactMaxDist);
+            occlusion = max(occlusion, w); // closest occluder wins; stable vs summing
         }
     }
 
-    occlusion = saturate(occlusion / 8.0);
     float shadow = lerp(1.0, 1.0 - occlusion, ContactStrength * ndotl);
     return saturate(shadow);
 }
