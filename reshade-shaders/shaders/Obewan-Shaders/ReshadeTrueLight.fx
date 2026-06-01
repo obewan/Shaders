@@ -256,32 +256,37 @@ float3 ReflectView(float3 viewDir, float3 normal)
     return normalize(viewDir - 2.0 * dot(viewDir, normal) * normal);
 }
 
-// Coarse linear march, then binary refinement + thickness rejection.
-bool SSR_Raymarch(float3 viewPos, float3 reflDir, out float2 hitUV)
+// Adaptive (sphere-trace-style) march: step proportional to the gap between the
+// ray and the nearest surface, then binary refinement + thickness rejection.
+bool SSR_Raymarch(float3 viewPos, float3 reflDir, float jitter, out float2 hitUV)
 {
     hitUV = 0.0;
 
     int steps = clamp(SSRSteps, 8, SSR_MAX_STEPS);
-    float stepSize = SSRMaxDistance / float(steps);
+    float baseStep = SSRMaxDistance / float(steps);
+    float minStep = baseStep * 0.25;
+    float maxStep = baseStep * 4.0;
+
+    float t = lerp(minStep, baseStep, jitter); // jittered start to break up banding
     float3 prevPos = viewPos;
-    float3 pos = viewPos;
 
     [loop]
     for (int i = 0; i < SSR_MAX_STEPS; ++i)
     {
-        if (i >= steps) break;
+        if (i >= steps || t > SSRMaxDistance) break;
 
-        prevPos = pos;
-        pos += reflDir * stepSize;
+        float3 pos = viewPos + reflDir * t;
 
         float2 uv = ProjectToUV(pos);
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
 
         float sd = GetDepth(uv);
-        if (sd >= 1.0) continue;
+        if (sd >= 1.0) { prevPos = pos; t += maxStep; continue; } // sky: skip ahead
 
         float3 sp = ReconstructViewPos(uv);
-        if (length(sp - viewPos) + stepSize * 0.5 < length(pos - viewPos))
+        float gap = length(sp) - length(pos); // >0: ray in front of surface; <=0: crossed it
+
+        if (gap <= 0.0)
         {
             // Binary search between the last in-front sample and this one.
             float3 a = prevPos, b = pos;
@@ -289,22 +294,24 @@ bool SSR_Raymarch(float3 viewPos, float3 reflDir, out float2 hitUV)
             for (int j = 0; j < 5; ++j)
             {
                 float3 mid = (a + b) * 0.5;
-                float2 muv = ProjectToUV(mid);
-                float3 msp = ReconstructViewPos(muv);
-                if (length(msp - viewPos) < length(mid - viewPos)) b = mid; // mid behind surface
-                else a = mid;                                               // mid in front
+                float3 msp = ReconstructViewPos(ProjectToUV(mid));
+                if (length(msp) <= length(mid)) b = mid; // mid behind surface
+                else a = mid;                            // mid in front
             }
 
             float2 fuv = ProjectToUV(b);
             float3 fsp = ReconstructViewPos(fuv);
 
             // Reject if the surface lies far behind the ray (silhouette / gap bleed).
-            float thickness = length(b - viewPos) - length(fsp - viewPos);
-            if (abs(thickness) > SSRThickness) return false;
+            if (abs(length(b) - length(fsp)) > SSRThickness) return false;
 
             hitUV = fuv;
             return true;
         }
+
+        // Advance proportionally to the gap (conservative sphere trace).
+        prevPos = pos;
+        t += clamp(gap * 0.7, minStep, maxStep);
     }
     return false;
 }
@@ -319,34 +326,64 @@ float4 ComputeSSR(float2 uv)
     float3 viewDir = normalize(viewPos);   // camera -> surface (incident)
     float3 refl    = ReflectView(viewDir, normal);
 
-    // Schlick Fresnel: surfaces facing the camera (NPCs, walls head-on) reflect
-    // ~F0 (almost nothing); only grazing angles build up reflection. This is the
-    // key term that removes the "everything is a mirror" artifact.
-    float NdotV   = saturate(dot(normal, -viewDir));
-    float fresnel = SSRBaseReflect + (1.0 - SSRBaseReflect) * pow(1.0 - NdotV, 5.0);
+    float jitter = JitterUV(uv).x + 0.5;   // [0,1]
 
     float2 hitUV;
-    if (!SSR_Raymarch(viewPos, refl, hitUV))
+    if (!SSR_Raymarch(viewPos, refl, jitter, hitUV))
         return float4(0, 0, 0, 0);
+
+    // Schlick Fresnel with metallic F0. Dielectrics: F0 = SSRBaseReflect, so
+    // head-on surfaces (NPCs/walls) reflect almost nothing and only grazing
+    // angles build up. Metals: F0 tends toward the surface colour, giving a
+    // stronger, albedo-tinted reflection.
+    float  NdotV  = saturate(dot(normal, -viewDir));
+    float3 albedo = tex2D(BackBuffer, uv).rgb;                 // surface's own colour (sRGB)
+    float3 f0     = lerp(SSRBaseReflect.xxx, albedo, SSRMetallic);
+    float3 F      = f0 + (1.0 - f0) * pow(1.0 - NdotV, 5.0);
+
+    // Metals tint the reflection by their albedo.
+    float3 reflectedColor = tex2D(BackBuffer, hitUV).rgb;      // sRGB scene colour
+    reflectedColor = lerp(reflectedColor, reflectedColor * albedo, SSRMetallic);
 
     // Fade reflections near screen edges to hide marching artifacts.
     float2 edge = smoothstep(0.0, 0.1, hitUV) * smoothstep(0.0, 0.1, 1.0 - hitUV);
     float edgeFade = edge.x * edge.y;
 
-    float3 reflectedColor = tex2D(BackBuffer, hitUV).rgb; // sRGB scene color
-    float weight = saturate(SSRStrength * fresnel * edgeFade);
+    float weight = saturate(SSRStrength * Luma(F) * edgeFade);
     return float4(reflectedColor, weight);
 }
 
+// Variable-radius disk blur: rougher (lower glossiness) and more distant
+// reflections blur more, faking glossy-vs-mirror surfaces. Two hex rings + center.
 float4 BlurSSR(float2 uv)
 {
-    float2 t = ReShade::PixelSize * 2.0; // half-res texel
-    float4 s0 = tex2D(SSRRawSampler, uv);
-    float4 s1 = tex2D(SSRRawSampler, uv + float2( t.x, 0));
-    float4 s2 = tex2D(SSRRawSampler, uv + float2(-t.x, 0));
-    float4 s3 = tex2D(SSRRawSampler, uv + float2(0,  t.y));
-    float4 s4 = tex2D(SSRRawSampler, uv + float2(0, -t.y));
-    return (s0 + s1 + s2 + s3 + s4) / 5.0;
+    static const float2 RING[6] =
+    {
+        float2( 1.0, 0.0), float2( 0.5,  0.86603), float2(-0.5,  0.86603),
+        float2(-1.0, 0.0), float2(-0.5, -0.86603), float2( 0.5, -0.86603)
+    };
+
+    float rough = 1.0 - SSRGlossiness;
+    float depth = GetDepth(uv);
+    // radius in half-res texels: roughness sets the base, distance widens it
+    float radius = rough * rough * 8.0 * (0.5 + depth * 1.5);
+    radius = min(radius, 12.0);
+
+    float2 texel = ReShade::PixelSize * 2.0; // half-res texel
+
+    float4 sum = tex2D(SSRRawSampler, uv);   // center, weight 1
+    float wsum = 1.0;
+
+    [loop]
+    for (int i = 0; i < 6; ++i)
+    {
+        float2 inner = RING[i] * 0.6 * radius * texel;
+        float2 outer = RING[i] * 1.0 * radius * texel;
+        sum += tex2D(SSRRawSampler, uv + inner) * 0.7; wsum += 0.7;
+        sum += tex2D(SSRRawSampler, uv + outer) * 0.4; wsum += 0.4;
+    }
+
+    return sum / wsum;
 }
 
 // ============================

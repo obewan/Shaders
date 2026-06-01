@@ -156,6 +156,8 @@ uniform float SSRMaxDistance  < ui_type = "slider"; ui_min = 1.0;  ui_max = 400.
 uniform float SSRStrength     < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;   ui_step = 0.01; ui_label = "SSR Strength"; > = 0.5;
 uniform float SSRBaseReflect  < ui_type = "slider"; ui_min = 0.0;  ui_max = 0.2;   ui_step = 0.005; ui_label = "SSR Base Reflectivity (F0)"; ui_tooltip = "Head-on reflectivity. Keep low (~0.02) so only grazing angles reflect — this stops the 'mirror on NPC' look."; > = 0.02;
 uniform float SSRThickness    < ui_type = "slider"; ui_min = 0.5;  ui_max = 50.0;  ui_step = 0.5; ui_label = "SSR Thickness (world)"; ui_tooltip = "Reject hits where the scene lies far behind the ray (silhouette bleed). Raise if reflections vanish, lower if backgrounds smear into reflections."; > = 8.0;
+uniform float SSRMetallic     < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;   ui_step = 0.01; ui_label = "SSR Metallic"; ui_tooltip = "0 = dielectric (clear reflection). 1 = metal (reflection tinted by the surface colour, stronger Fresnel)."; > = 0.0;
+uniform float SSRGlossiness   < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;   ui_step = 0.01; ui_label = "SSR Glossiness"; ui_tooltip = "1 = sharp mirror reflection. Lower = rougher / blurrier reflection. (Heuristic; ReShade cannot read TruePBR roughness.)"; > = 0.7;
 
 // ============================
 // DoF (focal range in world units; CoC mapped to pixel radius)
