@@ -55,9 +55,9 @@ uniform int FrameIndex < source = "framecount"; >;
 // CameraFar scales that into the world units used for position reconstruction.
 // CameraFovY replaces the (unavailable) projection matrix for unprojection.
 // ============================
-uniform bool  HasDepth  < ui_type = "checkbox"; ui_label = "Has Depth"; ui_tooltip = "Uncheck if the game exposes no usable depth buffer."; > = true;
-uniform float CameraFar  < ui_type = "slider"; ui_min = 100.0; ui_max = 10000.0; ui_step = 10.0; ui_label = "Camera Far (depth scale)"; ui_tooltip = "World-unit scale applied to normalized depth."; > = 1000.0;
-uniform float CameraFovY < ui_type = "slider"; ui_min = 30.0;  ui_max = 120.0;   ui_step = 1.0;  ui_label = "Vertical FOV (deg)"; ui_tooltip = "Match the game's vertical field of view."; > = 60.0;
+uniform bool  HasDepth  < ui_category = "Depth & Camera"; ui_type = "checkbox"; ui_label = "Has Depth"; ui_tooltip = "Uncheck if the game exposes no usable depth buffer."; > = true;
+uniform float CameraFar  < ui_category = "Depth & Camera"; ui_type = "slider"; ui_min = 100.0; ui_max = 10000.0; ui_step = 10.0; ui_label = "Camera Far (depth scale)"; ui_tooltip = "World-unit scale applied to normalized depth."; > = 1000.0;
+uniform float CameraFovY < ui_category = "Depth & Camera"; ui_type = "slider"; ui_min = 30.0;  ui_max = 120.0;   ui_step = 1.0;  ui_label = "Vertical FOV (deg)"; ui_tooltip = "Match the game's vertical field of view."; > = 60.0;
 
 // ============================
 // TEXTURES / SAMPLERS
@@ -135,7 +135,6 @@ sampler CompositeSampler { Texture = CompositeTex; MinFilter = LINEAR; MagFilter
 // BLUE-NOISE
 // Place BlueNoise.png in reshade-shaders/Textures. Default off to avoid load failures.
 // ============================
-uniform bool UseBlueNoise < ui_type = "checkbox"; ui_label = "Use Blue Noise"; ui_tooltip = "Use the blue-noise texture for grain and dithering (and SSR jitter) instead of white-noise hash. Less perceptible, more film-like. Requires bluenoise.png in reshade-shaders/textures."; > = false;
 texture2D BlueNoiseTex < source = "bluenoise.png"; pooled = true; > { Width = 64; Height = 64; Format = RGBA8; };
 sampler BlueNoiseSampler { Texture = BlueNoiseTex; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; AddressU = REPEAT; AddressV = REPEAT; };
 
@@ -143,128 +142,129 @@ sampler BlueNoiseSampler { Texture = BlueNoiseTex; MinFilter = POINT; MagFilter 
 // EXPOSURE
 // ============================
 uniform float frametime < source = "frametime"; >; // milliseconds since last frame
-uniform bool  EnableAutoExposure < ui_type = "checkbox"; ui_label = "Auto Exposure"; > = true;
-uniform float ExposureKey  < ui_type = "slider"; ui_min = 0.05; ui_max = 0.50; ui_step = 0.01; ui_label = "Exposure Key (middle grey)"; > = 0.18;
-uniform float AdaptSpeed   < ui_type = "slider"; ui_min = 0.1;  ui_max = 8.0;  ui_step = 0.1;  ui_label = "Adaptation Speed"; ui_tooltip = "Higher = faster eye adaptation. Lower = smoother."; > = 2.0;
-uniform float ExposureMin  < ui_type = "slider"; ui_min = 0.05; ui_max = 2.0;  ui_step = 0.01; ui_label = "Min Exposure (gain floor)"; > = 0.25;
-uniform float ExposureMax  < ui_type = "slider"; ui_min = 0.5;  ui_max = 8.0;  ui_step = 0.05; ui_label = "Max Exposure (gain ceiling)"; ui_tooltip = "Lower this to stop dark/night scenes from over-brightening."; > = 2.0;
-uniform float ManualExposure < ui_type = "slider"; ui_min = -4.0; ui_max = 4.0; ui_step = 0.1; ui_label = "Manual Exposure (EV, when auto off)"; > = 0.0;
+uniform bool  EnableAutoExposure < ui_category = "Exposure"; ui_type = "checkbox"; ui_label = "Auto Exposure"; > = true;
+uniform float ExposureKey  < ui_category = "Exposure"; ui_type = "slider"; ui_min = 0.05; ui_max = 0.50; ui_step = 0.01; ui_label = "Exposure Key (middle grey)"; > = 0.18;
+uniform float AdaptSpeed   < ui_category = "Exposure"; ui_type = "slider"; ui_min = 0.1;  ui_max = 8.0;  ui_step = 0.1;  ui_label = "Adaptation Speed"; ui_tooltip = "Higher = faster eye adaptation. Lower = smoother."; > = 2.0;
+uniform float ExposureMin  < ui_category = "Exposure"; ui_type = "slider"; ui_min = 0.05; ui_max = 2.0;  ui_step = 0.01; ui_label = "Min Exposure (gain floor)"; > = 0.25;
+uniform float ExposureMax  < ui_category = "Exposure"; ui_type = "slider"; ui_min = 0.5;  ui_max = 8.0;  ui_step = 0.05; ui_label = "Max Exposure (gain ceiling)"; ui_tooltip = "Lower this to stop dark/night scenes from over-brightening."; > = 2.0;
+uniform float ManualExposure < ui_category = "Exposure"; ui_type = "slider"; ui_min = -4.0; ui_max = 4.0; ui_step = 0.1; ui_label = "Manual Exposure (EV, when auto off)"; > = 0.0;
 
 // ============================
 // TONEMAP & GRADING
 // ============================
-uniform int   TonemapOperator < ui_type = "combo"; ui_items = "ACES\0AgX\0Hable (Uncharted 2)\0Reinhard\0"; ui_label = "Tonemap Operator"; ui_tooltip = "Maps HDR-range light to a displayable image; each has a different look.\n\nACES: punchy, high contrast, cinematic, but skews bright saturated colours toward orange/white (hue shift).\n\nAgX: most colour-accurate at extremes - fire, sunsets and magic keep their hue instead of blowing to white. Flatter, neutral, modern default.\n\nHable (Uncharted 2): filmic toe/shoulder curve, cinematic contrast; often the most photographic. White Point is meaningful.\n\nReinhard: softest and flattest, a neutral reference. White Point only nudges the brightest highlights."; > = 1;
-uniform float TonemapWhite    < ui_type = "slider"; ui_min = 1.0; ui_max = 16.0; ui_step = 0.1; ui_label = "White Point (Hable/Reinhard)"; ui_tooltip = "Brightness that maps to pure white. On Hable it shifts the whole curve (very visible); on Reinhard it only affects the brightest highlights. Ignored by ACES/AgX."; > = 4.0;
-uniform float Contrast        < ui_type = "slider"; ui_min = 0.5; ui_max = 2.0;  ui_step = 0.01; ui_label = "Contrast"; ui_tooltip = "Tonal contrast around mid-grey (luminance-based, so it won't grey out or clip colours). Lower (~0.85) to flatten AgX/ACES punch for a softer, more filmic look."; > = 1.0;
-uniform float Saturation      < ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01; ui_label = "Saturation"; ui_tooltip = "Colour saturation. Nudge up (~1.1) to compensate for the flatness of AgX or a lowered Contrast."; > = 1.0;
-uniform float WhiteTemp       < ui_type = "slider"; ui_min = -100.0; ui_max = 100.0; ui_step = 1.0; ui_label = "Temperature"; ui_tooltip = "White balance: warm/orange (+) to cool/blue (-). Luminance-preserving."; > = 0.0;
-uniform float WhiteTint       < ui_type = "slider"; ui_min = -100.0; ui_max = 100.0; ui_step = 1.0; ui_label = "Tint"; ui_tooltip = "White balance: magenta (+) to green (-). Luminance-preserving."; > = 0.0;
+uniform int   TonemapOperator < ui_category = "Tonemap & Grading"; ui_type = "combo"; ui_items = "ACES\0AgX\0Hable (Uncharted 2)\0Reinhard\0"; ui_label = "Tonemap Operator"; ui_tooltip = "Maps HDR-range light to a displayable image; each has a different look.\n\nACES: punchy, high contrast, cinematic, but skews bright saturated colours toward orange/white (hue shift).\n\nAgX: most colour-accurate at extremes - fire, sunsets and magic keep their hue instead of blowing to white. Flatter, neutral, modern default.\n\nHable (Uncharted 2): filmic toe/shoulder curve, cinematic contrast; often the most photographic. White Point is meaningful.\n\nReinhard: softest and flattest, a neutral reference. White Point only nudges the brightest highlights."; > = 1;
+uniform float TonemapWhite    < ui_category = "Tonemap & Grading"; ui_type = "slider"; ui_min = 1.0; ui_max = 16.0; ui_step = 0.1; ui_label = "White Point (Hable/Reinhard)"; ui_tooltip = "Brightness that maps to pure white. On Hable it shifts the whole curve (very visible); on Reinhard it only affects the brightest highlights. Ignored by ACES/AgX."; > = 4.0;
+uniform float Contrast        < ui_category = "Tonemap & Grading"; ui_type = "slider"; ui_min = 0.5; ui_max = 2.0;  ui_step = 0.01; ui_label = "Contrast"; ui_tooltip = "Tonal contrast around mid-grey (luminance-based, so it won't grey out or clip colours). Lower (~0.85) to flatten AgX/ACES punch for a softer, more filmic look."; > = 1.0;
+uniform float Saturation      < ui_category = "Tonemap & Grading"; ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01; ui_label = "Saturation"; ui_tooltip = "Colour saturation. Nudge up (~1.1) to compensate for the flatness of AgX or a lowered Contrast."; > = 1.0;
+uniform float WhiteTemp       < ui_category = "Tonemap & Grading"; ui_type = "slider"; ui_min = -100.0; ui_max = 100.0; ui_step = 1.0; ui_label = "Temperature"; ui_tooltip = "White balance: warm/orange (+) to cool/blue (-). Luminance-preserving."; > = 0.0;
+uniform float WhiteTint       < ui_category = "Tonemap & Grading"; ui_type = "slider"; ui_min = -100.0; ui_max = 100.0; ui_step = 1.0; ui_label = "Tint"; ui_tooltip = "White balance: magenta (+) to green (-). Luminance-preserving."; > = 0.0;
 
 // ============================
 // PURKINJE (night vision) — the eye's rod/scotopic shift in darkness
 // ============================
-uniform bool  EnablePurkinje    < ui_type = "checkbox"; ui_label = "Enable Purkinje (Night Vision)"; ui_tooltip = "Human vision desaturates and shifts blue in darkness (rod vision). Engages at night / in dungeons, off in daylight. It's eye physiology, not a camera effect."; > = true;
-uniform float PurkinjeStrength  < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "Purkinje Strength"; > = 0.5;
-uniform float PurkinjeThreshold < ui_type = "slider"; ui_min = 0.01; ui_max = 0.30; ui_step = 0.01; ui_label = "Purkinje Threshold"; ui_tooltip = "Scene darkness (adapted luminance) below which night vision kicks in. Higher = engages in brighter scenes."; > = 0.10;
+uniform bool  EnablePurkinje    < ui_category = "Night Vision (Purkinje)"; ui_type = "checkbox"; ui_label = "Enable Purkinje (Night Vision)"; ui_tooltip = "Human vision desaturates and shifts blue in darkness (rod vision). Engages at night / in dungeons, off in daylight. It's eye physiology, not a camera effect."; > = true;
+uniform float PurkinjeStrength  < ui_category = "Night Vision (Purkinje)"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "Purkinje Strength"; > = 0.5;
+uniform float PurkinjeThreshold < ui_category = "Night Vision (Purkinje)"; ui_type = "slider"; ui_min = 0.01; ui_max = 0.30; ui_step = 0.01; ui_label = "Purkinje Threshold"; ui_tooltip = "Scene darkness (adapted luminance) below which night vision kicks in. Higher = engages in brighter scenes."; > = 0.10;
 
 // ============================
 // AO
 // ============================
-uniform bool  EnableAO       < ui_type = "checkbox"; ui_label = "Enable AO"; > = true;
-uniform int   AOMode         < ui_type = "combo"; ui_items = "SSAO (fast, low-end)\0GTAO (quality)\0"; ui_label = "AO Mode"; ui_tooltip = "SSAO: cheap disk sampling. GTAO: horizon-marched, more accurate, a bit heavier."; > = 0;
-uniform float AORadius       < ui_type = "slider"; ui_min = 0.05; ui_max = 20.0; ui_step = 0.05; ui_label = "AO Radius (world)"; > = 3.0;
-uniform int   AOSamples      < ui_type = "slider"; ui_min = 4;    ui_max = 12;   ui_step = 1;    ui_label = "AO Samples"; > = 12;
-uniform float AOStrength     < ui_type = "slider"; ui_min = 0.0;  ui_max = 4.0;  ui_step = 0.01; ui_label = "AO Strength"; > = 1.6;
-uniform float AOPower        < ui_type = "slider"; ui_min = 0.5;  ui_max = 4.0;  ui_step = 0.05; ui_label = "AO Contrast (power)"; ui_tooltip = "Higher = deeper, more contrasty occlusion."; > = 2.0;
-uniform float AOBias         < ui_type = "slider"; ui_min = 0.0;  ui_max = 0.5;  ui_step = 0.005; ui_label = "AO Bias"; ui_tooltip = "Raise to reduce self-occlusion / flat-surface noise."; > = 0.03;
-uniform float AOFadeStart    < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "AO Fade Start (depth)"; ui_tooltip = "Normalized depth where AO begins to fade out."; > = 0.6;
-uniform float AOFadeEnd      < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "AO Fade End (depth)"; ui_tooltip = "Normalized depth where AO is fully gone. Lower this if distant terrain (mountains) still shows AO noise."; > = 0.9;
-uniform float AODistantRadius < ui_type = "slider"; ui_min = 0.0; ui_max = 0.1; ui_step = 0.002; ui_label = "AO Distant Radius"; ui_tooltip = "Grows the AO radius with distance so far objects keep a stable, less-noisy AO footprint (XeGTAO-style). 0 = off. An alternative to fading AO out."; > = 0.0;
+uniform bool  EnableAO       < ui_category = "Ambient Occlusion"; ui_type = "checkbox"; ui_label = "Enable AO"; > = true;
+uniform int   AOMode         < ui_category = "Ambient Occlusion"; ui_type = "combo"; ui_items = "SSAO (fast, low-end)\0GTAO (quality)\0"; ui_label = "AO Mode"; ui_tooltip = "SSAO: cheap disk sampling. GTAO: horizon-marched, more accurate, a bit heavier."; > = 0;
+uniform float AORadius       < ui_category = "Ambient Occlusion"; ui_type = "slider"; ui_min = 0.05; ui_max = 20.0; ui_step = 0.05; ui_label = "AO Radius (world)"; > = 3.0;
+uniform int   AOSamples      < ui_category = "Ambient Occlusion"; ui_type = "slider"; ui_min = 4;    ui_max = 12;   ui_step = 1;    ui_label = "AO Samples"; > = 12;
+uniform float AOStrength     < ui_category = "Ambient Occlusion"; ui_type = "slider"; ui_min = 0.0;  ui_max = 4.0;  ui_step = 0.01; ui_label = "AO Strength"; > = 1.6;
+uniform float AOPower        < ui_category = "Ambient Occlusion"; ui_type = "slider"; ui_min = 0.5;  ui_max = 4.0;  ui_step = 0.05; ui_label = "AO Contrast (power)"; ui_tooltip = "Higher = deeper, more contrasty occlusion."; > = 2.0;
+uniform float AOBias         < ui_category = "Ambient Occlusion"; ui_type = "slider"; ui_min = 0.0;  ui_max = 0.5;  ui_step = 0.005; ui_label = "AO Bias"; ui_tooltip = "Raise to reduce self-occlusion / flat-surface noise."; > = 0.03;
+uniform float AOFadeStart    < ui_category = "Ambient Occlusion"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "AO Fade Start (depth)"; ui_tooltip = "Normalized depth where AO begins to fade out."; > = 0.6;
+uniform float AOFadeEnd      < ui_category = "Ambient Occlusion"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "AO Fade End (depth)"; ui_tooltip = "Normalized depth where AO is fully gone. Lower this if distant terrain (mountains) still shows AO noise."; > = 0.9;
+uniform float AODistantRadius < ui_category = "Ambient Occlusion"; ui_type = "slider"; ui_min = 0.0; ui_max = 0.1; ui_step = 0.002; ui_label = "AO Distant Radius"; ui_tooltip = "Grows the AO radius with distance so far objects keep a stable, less-noisy AO footprint (XeGTAO-style). 0 = off. An alternative to fading AO out."; > = 0.0;
 
 // ============================
 // CONTACT SHADOWS
 // ============================
-uniform bool  EnableContact   < ui_type = "checkbox"; ui_label = "Enable Contact Shadows"; > = true;
-uniform float ContactMaxDist  < ui_type = "slider"; ui_min = 0.05; ui_max = 5.0; ui_step = 0.05; ui_label = "Contact Max Distance (world)"; > = 1.0;
-uniform float ContactStrength < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0; ui_step = 0.01; ui_label = "Contact Strength"; > = 0.65;
+uniform bool  EnableContact   < ui_category = "Contact Shadows"; ui_type = "checkbox"; ui_label = "Enable Contact Shadows"; > = true;
+uniform float ContactMaxDist  < ui_category = "Contact Shadows"; ui_type = "slider"; ui_min = 0.05; ui_max = 5.0; ui_step = 0.05; ui_label = "Contact Max Distance (world)"; > = 1.0;
+uniform float ContactStrength < ui_category = "Contact Shadows"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0; ui_step = 0.01; ui_label = "Contact Strength"; > = 0.65;
 
 // ============================
 // SSR
 // ============================
-uniform bool  EnableSSR       < ui_type = "checkbox"; ui_label = "Enable SSR"; > = true;
-uniform int   SSRSteps        < ui_type = "slider"; ui_min = 8;    ui_max = 32;    ui_step = 1;   ui_label = "SSR Steps"; > = 20;
-uniform float SSRMaxDistance  < ui_type = "slider"; ui_min = 1.0;  ui_max = 400.0; ui_step = 1.0; ui_label = "SSR Max Distance (world)"; > = 60.0;
-uniform float SSRStrength     < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;   ui_step = 0.01; ui_label = "SSR Strength"; > = 0.5;
-uniform float SSRBaseReflect  < ui_type = "slider"; ui_min = 0.0;  ui_max = 0.2;   ui_step = 0.005; ui_label = "SSR Base Reflectivity (F0)"; ui_tooltip = "Head-on reflectivity. Keep low (~0.02) so only grazing angles reflect — this stops the 'mirror on NPC' look."; > = 0.02;
-uniform float SSRThickness    < ui_type = "slider"; ui_min = 0.5;  ui_max = 50.0;  ui_step = 0.5; ui_label = "SSR Thickness (world)"; ui_tooltip = "Reject hits where the scene lies far behind the ray (silhouette bleed). Raise if reflections vanish, lower if backgrounds smear into reflections."; > = 8.0;
-uniform float SSRMetallic     < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;   ui_step = 0.01; ui_label = "SSR Metallic"; ui_tooltip = "0 = dielectric (clear reflection). 1 = metal (reflection tinted by the surface colour, stronger Fresnel)."; > = 0.0;
-uniform float SSRGlossiness   < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;   ui_step = 0.01; ui_label = "SSR Glossiness"; ui_tooltip = "1 = sharp mirror reflection. Lower = rougher / blurrier reflection. (Heuristic; ReShade cannot read TruePBR roughness.)"; > = 0.7;
+uniform bool  EnableSSR       < ui_category = "Screen-Space Reflections"; ui_type = "checkbox"; ui_label = "Enable SSR"; > = true;
+uniform int   SSRSteps        < ui_category = "Screen-Space Reflections"; ui_type = "slider"; ui_min = 8;    ui_max = 32;    ui_step = 1;   ui_label = "SSR Steps"; > = 20;
+uniform float SSRMaxDistance  < ui_category = "Screen-Space Reflections"; ui_type = "slider"; ui_min = 1.0;  ui_max = 400.0; ui_step = 1.0; ui_label = "SSR Max Distance (world)"; > = 60.0;
+uniform float SSRStrength     < ui_category = "Screen-Space Reflections"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;   ui_step = 0.01; ui_label = "SSR Strength"; > = 0.5;
+uniform float SSRBaseReflect  < ui_category = "Screen-Space Reflections"; ui_type = "slider"; ui_min = 0.0;  ui_max = 0.2;   ui_step = 0.005; ui_label = "SSR Base Reflectivity (F0)"; ui_tooltip = "Head-on reflectivity. Keep low (~0.02) so only grazing angles reflect — this stops the 'mirror on NPC' look."; > = 0.02;
+uniform float SSRThickness    < ui_category = "Screen-Space Reflections"; ui_type = "slider"; ui_min = 0.5;  ui_max = 50.0;  ui_step = 0.5; ui_label = "SSR Thickness (world)"; ui_tooltip = "Reject hits where the scene lies far behind the ray (silhouette bleed). Raise if reflections vanish, lower if backgrounds smear into reflections."; > = 8.0;
+uniform float SSRMetallic     < ui_category = "Screen-Space Reflections"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;   ui_step = 0.01; ui_label = "SSR Metallic"; ui_tooltip = "0 = dielectric (clear reflection). 1 = metal (reflection tinted by the surface colour, stronger Fresnel)."; > = 0.0;
+uniform float SSRGlossiness   < ui_category = "Screen-Space Reflections"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;   ui_step = 0.01; ui_label = "SSR Glossiness"; ui_tooltip = "1 = sharp mirror reflection. Lower = rougher / blurrier reflection. (Heuristic; ReShade cannot read TruePBR roughness.)"; > = 0.7;
 
 // ============================
 // DoF (focal range in world units; CoC mapped to pixel radius)
 // ============================
-uniform bool  EnableDoF      < ui_type = "checkbox"; ui_label = "Enable DoF"; > = true;
-uniform float FocalDistance  < ui_type = "slider"; ui_min = 0.0;  ui_max = 500.0; ui_step = 1.0; ui_label = "Focal Distance (world)"; > = 30.0;
-uniform float FocalRange     < ui_type = "slider"; ui_min = 1.0;  ui_max = 300.0; ui_step = 1.0; ui_label = "In-focus Range (world)"; > = 40.0;
-uniform float MaxCoCRadius   < ui_type = "slider"; ui_min = 0.5;  ui_max = 16.0;  ui_step = 0.25; ui_label = "Max CoC Radius (px)"; ui_tooltip = "Maximum blur radius in pixels. Small values (1-3) give subtle defocus; raise for stronger bokeh."; > = 3.0;
+uniform bool  EnableDoF      < ui_category = "Depth of Field"; ui_type = "checkbox"; ui_label = "Enable DoF"; > = true;
+uniform float FocalDistance  < ui_category = "Depth of Field"; ui_type = "slider"; ui_min = 0.0;  ui_max = 500.0; ui_step = 1.0; ui_label = "Focal Distance (world)"; > = 30.0;
+uniform float FocalRange     < ui_category = "Depth of Field"; ui_type = "slider"; ui_min = 1.0;  ui_max = 300.0; ui_step = 1.0; ui_label = "In-focus Range (world)"; > = 40.0;
+uniform float MaxCoCRadius   < ui_category = "Depth of Field"; ui_type = "slider"; ui_min = 0.5;  ui_max = 16.0;  ui_step = 0.25; ui_label = "Max CoC Radius (px)"; ui_tooltip = "Maximum blur radius in pixels. Small values (1-3) give subtle defocus; raise for stronger bokeh."; > = 3.0;
 
 // ============================
 // BLOOM
 // ============================
-uniform bool  EnableBloom    < ui_type = "checkbox"; ui_label = "Enable Bloom"; > = true;
-uniform float BloomThreshold < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.01; ui_label = "Bloom Threshold (linear)"; ui_tooltip = "Brightness where bloom starts."; > = 0.7;
-uniform float BloomSoftKnee  < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.01; ui_label = "Bloom Soft Knee"; ui_tooltip = "Soft transition around the threshold (0 = hard cutoff, 1 = very soft). Reduces flicker/popping on bright edges."; > = 0.5;
-uniform float BloomStrength  < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.005; ui_label = "Bloom Strength"; > = 0.08;
-uniform float BloomRadius    < ui_type = "slider"; ui_min = 0.5; ui_max = 2.0; ui_step = 0.05; ui_label = "Bloom Spread"; ui_tooltip = "Width of the glow (scales the upsample tent)."; > = 1.0;
+uniform bool  EnableBloom    < ui_category = "Bloom"; ui_type = "checkbox"; ui_label = "Enable Bloom"; > = true;
+uniform float BloomThreshold < ui_category = "Bloom"; ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.01; ui_label = "Bloom Threshold (linear)"; ui_tooltip = "Brightness where bloom starts."; > = 0.7;
+uniform float BloomSoftKnee  < ui_category = "Bloom"; ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.01; ui_label = "Bloom Soft Knee"; ui_tooltip = "Soft transition around the threshold (0 = hard cutoff, 1 = very soft). Reduces flicker/popping on bright edges."; > = 0.5;
+uniform float BloomStrength  < ui_category = "Bloom"; ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.005; ui_label = "Bloom Strength"; > = 0.08;
+uniform float BloomRadius    < ui_category = "Bloom"; ui_type = "slider"; ui_min = 0.5; ui_max = 2.0; ui_step = 0.05; ui_label = "Bloom Spread"; ui_tooltip = "Width of the glow (scales the upsample tent)."; > = 1.0;
 
 // ============================
 // GOD RAYS (volumetric light scattering from the brightest on-screen light)
 // ============================
-uniform bool  EnableGodrays   < ui_type = "checkbox"; ui_label = "Enable God Rays"; > = true;
-uniform float GodrayIntensity < ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01;  ui_label = "God Ray Intensity"; > = 0.5;
-uniform float GodrayThreshold < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0;  ui_step = 0.01;  ui_label = "God Ray Threshold"; ui_tooltip = "Brightness a pixel needs to emit shafts. Lower = fuller shafts from more of the sky."; > = 0.2;
-uniform float GodrayDensity   < ui_type = "slider"; ui_min = 0.1; ui_max = 1.0;  ui_step = 0.01;  ui_label = "God Ray Length"; ui_tooltip = "How far the shafts reach toward the light."; > = 0.6;
-uniform float GodrayDecay     < ui_type = "slider"; ui_min = 0.8; ui_max = 0.99; ui_step = 0.005; ui_label = "God Ray Decay"; ui_tooltip = "Falloff along each shaft. Higher = longer."; > = 0.95;
-uniform float GodraySkyBias    < ui_type = "slider"; ui_min = 0.0; ui_max = 64.0; ui_step = 1.0; ui_label = "God Ray Sky Bias"; ui_tooltip = "Higher = shafts come from the distant sky/sun, not nearby bright geometry (snowy mountains). 0 = any bright pixel. If god rays vanish when you raise this, your depth buffer doesn't mark the sky as far -> leave it at 0."; > = 0.0;
+uniform bool  EnableGodrays   < ui_category = "God Rays"; ui_type = "checkbox"; ui_label = "Enable God Rays"; > = true;
+uniform float GodrayIntensity < ui_category = "God Rays"; ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01;  ui_label = "God Ray Intensity"; > = 0.5;
+uniform float GodrayThreshold < ui_category = "God Rays"; ui_type = "slider"; ui_min = 0.0; ui_max = 1.0;  ui_step = 0.01;  ui_label = "God Ray Threshold"; ui_tooltip = "Brightness a pixel needs to emit shafts. Lower = fuller shafts from more of the sky."; > = 0.2;
+uniform float GodrayDensity   < ui_category = "God Rays"; ui_type = "slider"; ui_min = 0.1; ui_max = 1.0;  ui_step = 0.01;  ui_label = "God Ray Length"; ui_tooltip = "How far the shafts reach toward the light."; > = 0.6;
+uniform float GodrayDecay     < ui_category = "God Rays"; ui_type = "slider"; ui_min = 0.8; ui_max = 0.99; ui_step = 0.005; ui_label = "God Ray Decay"; ui_tooltip = "Falloff along each shaft. Higher = longer."; > = 0.95;
+uniform float GodraySkyBias    < ui_category = "God Rays"; ui_type = "slider"; ui_min = 0.0; ui_max = 64.0; ui_step = 1.0; ui_label = "God Ray Sky Bias"; ui_tooltip = "Higher = shafts come from the distant sky/sun, not nearby bright geometry (snowy mountains). 0 = any bright pixel. If god rays vanish when you raise this, your depth buffer doesn't mark the sky as far -> leave it at 0."; > = 0.0;
 
 // ============================
 // LENS FLARE (screen-space ghosts + halo from the brightest areas)
 // ============================
-uniform bool  EnableLensFlare    < ui_type = "checkbox"; ui_label = "Enable Lens Flare"; > = true;
-uniform float LensFlareIntensity < ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01; ui_label = "Lens Flare Intensity"; > = 0.4;
-uniform int   LensFlareGhosts    < ui_type = "slider"; ui_min = 1;   ui_max = 8;    ui_step = 1;    ui_label = "Lens Flare Ghosts"; ui_tooltip = "Number of ghost reflections along the line through screen centre."; > = 4;
-uniform float LensFlareDispersal < ui_type = "slider"; ui_min = 0.1; ui_max = 0.6;  ui_step = 0.01; ui_label = "Lens Flare Dispersal"; ui_tooltip = "Spacing of the ghosts."; > = 0.3;
-uniform float LensFlareHalo      < ui_type = "slider"; ui_min = 0.0; ui_max = 0.8;  ui_step = 0.01; ui_label = "Lens Flare Halo Width"; > = 0.4;
-uniform float LensFlareCA        < ui_type = "slider"; ui_min = 0.0; ui_max = 8.0;  ui_step = 0.1;  ui_label = "Lens Flare Chromatic Aberration"; > = 2.0;
+uniform bool  EnableLensFlare    < ui_category = "Lens Flare"; ui_type = "checkbox"; ui_label = "Enable Lens Flare"; > = true;
+uniform float LensFlareIntensity < ui_category = "Lens Flare"; ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01; ui_label = "Lens Flare Intensity"; > = 0.4;
+uniform int   LensFlareGhosts    < ui_category = "Lens Flare"; ui_type = "slider"; ui_min = 1;   ui_max = 8;    ui_step = 1;    ui_label = "Lens Flare Ghosts"; ui_tooltip = "Number of ghost reflections along the line through screen centre."; > = 4;
+uniform float LensFlareDispersal < ui_category = "Lens Flare"; ui_type = "slider"; ui_min = 0.1; ui_max = 0.6;  ui_step = 0.01; ui_label = "Lens Flare Dispersal"; ui_tooltip = "Spacing of the ghosts."; > = 0.3;
+uniform float LensFlareHalo      < ui_category = "Lens Flare"; ui_type = "slider"; ui_min = 0.0; ui_max = 0.8;  ui_step = 0.01; ui_label = "Lens Flare Halo Width"; > = 0.4;
+uniform float LensFlareCA        < ui_category = "Lens Flare"; ui_type = "slider"; ui_min = 0.0; ui_max = 8.0;  ui_step = 0.1;  ui_label = "Lens Flare Chromatic Aberration"; > = 2.0;
 
 // ============================
 // FOG (distance / aerial perspective)
 // ============================
-uniform bool   EnableFog    < ui_type = "checkbox"; ui_label = "Enable Fog"; > = true;
-uniform float3 FogColor     < ui_type = "color"; ui_label = "Fog Color"; > = float3(0.62, 0.69, 0.80);
-uniform float  FogStart     < ui_type = "slider"; ui_min = 0.0;  ui_max = 1500.0;  ui_step = 10.0;    ui_label = "Fog Start (world)"; ui_tooltip = "Distance before fog begins."; > = 250.0;
-uniform float  FogDensity   < ui_type = "slider"; ui_min = 0.0;  ui_max = 0.003;   ui_step = 0.0001; ui_label = "Fog Density"; ui_tooltip = "How quickly fog accumulates with distance. Subtle is best (a little goes a long way)."; > = 0.0005;
-uniform float  FogMax       < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;     ui_step = 0.001;  ui_label = "Fog Max"; ui_tooltip = "Maximum fog opacity at the far distance."; > = 0.005;
-uniform float  FogSunAmount < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;    ui_step = 0.01;   ui_label = "Fog Sun Glow"; ui_tooltip = "Forward scattering: fog brightens toward the sun (its on-screen position)."; > = 0.5;
-uniform float3 FogSunColor  < ui_type = "color"; ui_label = "Fog Sun Color"; > = float3(1.0, 0.85, 0.6);
+uniform bool   EnableFog    < ui_category = "Fog"; ui_type = "checkbox"; ui_label = "Enable Fog"; > = true;
+uniform float3 FogColor     < ui_category = "Fog"; ui_type = "color"; ui_label = "Fog Color"; > = float3(0.62, 0.69, 0.80);
+uniform float  FogStart     < ui_category = "Fog"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1500.0;  ui_step = 10.0;    ui_label = "Fog Start (world)"; ui_tooltip = "Distance before fog begins."; > = 250.0;
+uniform float  FogDensity   < ui_category = "Fog"; ui_type = "slider"; ui_min = 0.0;  ui_max = 0.003;   ui_step = 0.0001; ui_label = "Fog Density"; ui_tooltip = "How quickly fog accumulates with distance. Subtle is best (a little goes a long way)."; > = 0.0005;
+uniform float  FogMax       < ui_category = "Fog"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;     ui_step = 0.001;  ui_label = "Fog Max"; ui_tooltip = "Maximum fog opacity at the far distance."; > = 0.005;
+uniform float  FogSunAmount < ui_category = "Fog"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;    ui_step = 0.01;   ui_label = "Fog Sun Glow"; ui_tooltip = "Forward scattering: fog brightens toward the sun (its on-screen position)."; > = 0.5;
+uniform float3 FogSunColor  < ui_category = "Fog"; ui_type = "color"; ui_label = "Fog Sun Color"; > = float3(1.0, 0.85, 0.6);
 
 // ============================
 // LOCAL CONTRAST (clarity)
 // ============================
-uniform bool  EnableClarity < ui_type = "checkbox"; ui_label = "Enable Clarity"; > = true;
-uniform float ClarityAmount < ui_type = "slider"; ui_min = 0.0; ui_max = 1.5; ui_step = 0.01; ui_label = "Clarity Amount"; ui_tooltip = "Local midtone contrast: pulls out texture detail (rock, fabric, foliage) for a crisp, near-HDR pop without global contrast's flatness."; > = 0.3;
-uniform float ClarityRadius < ui_type = "slider"; ui_min = 8.0; ui_max = 96.0; ui_step = 1.0; ui_label = "Clarity Radius (px)"; ui_tooltip = "Scale of the local contrast. Larger = broader, softer pop."; > = 40.0;
+uniform bool  EnableClarity < ui_category = "Local Contrast"; ui_type = "checkbox"; ui_label = "Enable Clarity"; > = true;
+uniform float ClarityAmount < ui_category = "Local Contrast"; ui_type = "slider"; ui_min = 0.0; ui_max = 1.5; ui_step = 0.01; ui_label = "Clarity Amount"; ui_tooltip = "Local midtone contrast: pulls out texture detail (rock, fabric, foliage) for a crisp, near-HDR pop without global contrast's flatness."; > = 0.3;
+uniform float ClarityRadius < ui_category = "Local Contrast"; ui_type = "slider"; ui_min = 8.0; ui_max = 96.0; ui_step = 1.0; ui_label = "Clarity Radius (px)"; ui_tooltip = "Scale of the local contrast. Larger = broader, softer pop."; > = 40.0;
 
 // ============================
 // SHARPEN & GRAIN
 // ============================
-uniform bool  EnableSharpen < ui_type = "checkbox"; ui_label = "Enable Sharpen"; > = true;
-uniform float Sharpness     < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0;  ui_step = 0.01;  ui_label = "Sharpness"; ui_tooltip = "Contrast-adaptive sharpening: boosts fine detail while sparing strong edges from haloes/crunch."; > = 0.25;
-uniform bool  EnableGrain   < ui_type = "checkbox"; ui_label = "Enable Grain"; > = true;
-uniform float GrainAmount   < ui_type = "slider"; ui_min = 0.0; ui_max = 0.10; ui_step = 0.001; ui_label = "Grain Amount"; ui_tooltip = "Film grain strength. Luminance-aware, so it peaks in midtones and fades in shadows/highlights."; > = 0.02;
-uniform float GrainSize     < ui_type = "slider"; ui_min = 1.0; ui_max = 4.0;  ui_step = 0.1;   ui_label = "Grain Size"; ui_tooltip = "Coarseness of the grain (1 = per-pixel, higher = chunkier)."; > = 1.0;
+uniform bool  EnableSharpen < ui_category = "Sharpen & Grain"; ui_type = "checkbox"; ui_label = "Enable Sharpen"; > = true;
+uniform float Sharpness     < ui_category = "Sharpen & Grain"; ui_type = "slider"; ui_min = 0.0; ui_max = 1.0;  ui_step = 0.01;  ui_label = "Sharpness"; ui_tooltip = "Contrast-adaptive sharpening: boosts fine detail while sparing strong edges from haloes/crunch."; > = 0.25;
+uniform bool  EnableGrain   < ui_category = "Sharpen & Grain"; ui_type = "checkbox"; ui_label = "Enable Grain"; > = true;
+uniform float GrainAmount   < ui_category = "Sharpen & Grain"; ui_type = "slider"; ui_min = 0.0; ui_max = 0.10; ui_step = 0.001; ui_label = "Grain Amount"; ui_tooltip = "Film grain strength. Luminance-aware, so it peaks in midtones and fades in shadows/highlights."; > = 0.02;
+uniform float GrainSize     < ui_category = "Sharpen & Grain"; ui_type = "slider"; ui_min = 1.0; ui_max = 4.0;  ui_step = 0.1;   ui_label = "Grain Size"; ui_tooltip = "Coarseness of the grain (1 = per-pixel, higher = chunkier)."; > = 1.0;
+uniform bool  UseBlueNoise  < ui_category = "Sharpen & Grain"; ui_type = "checkbox"; ui_label = "Use Blue Noise"; ui_tooltip = "Use the blue-noise texture for grain and dithering (and SSR jitter) instead of white-noise hash. Less perceptible, more film-like. Requires bluenoise.png in reshade-shaders/textures."; > = false;
 
 // ============================
 // DEBUG
 // ============================
-uniform int DebugMode < ui_type = "combo"; ui_items = "Off\0Depth\0Normals\0ViewPos\0CoC\0AO\0Contact\0SSR\0Bloom\0Godrays\0Lens Flare\0"; ui_label = "Debug View"; > = 0;
+uniform int DebugMode < ui_category = "Debug"; ui_type = "combo"; ui_items = "Off\0Depth\0Normals\0ViewPos\0CoC\0AO\0Contact\0SSR\0Bloom\0Godrays\0Lens Flare\0"; ui_label = "Debug View"; > = 0;
