@@ -90,6 +90,15 @@ sampler AdaptSampler { Texture = AdaptTex; MinFilter = POINT; MagFilter = POINT;
 texture2D AdaptPrevTex { Width = 1; Height = 1; Format = R16F; };
 sampler AdaptPrevSampler { Texture = AdaptPrevTex; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
 
+// Light position: brightest-area centroid (rg = screen UV, b = confidence), for
+// god rays / lens flares. 1x1 with a ping-pong for temporal smoothing.
+texture2D LightPosTex { Width = 1; Height = 1; Format = RGBA16F; }; BLOOM_SAMP(LightPosSampler, LightPosTex)
+texture2D LightPosPrevTex { Width = 1; Height = 1; Format = RGBA16F; }; BLOOM_SAMP(LightPosPrevSampler, LightPosPrevTex)
+
+// God rays: occluder-masked half-res bright source + radial scatter result.
+texture2D GodrayBrightTex { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = RGBA16F; }; BLOOM_SAMP(GodrayBrightSampler, GodrayBrightTex)
+texture2D GodrayTex       { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = RGBA16F; }; BLOOM_SAMP(GodraySampler, GodrayTex)
+
 // AO (computed at half-res, upsampled in the blur)
 texture2D AORawTex { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = R8; };
 sampler AORawSampler { Texture = AORawTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
@@ -141,10 +150,10 @@ uniform float ManualExposure < ui_type = "slider"; ui_min = -4.0; ui_max = 4.0; 
 // ============================
 // TONEMAP & GRADING
 // ============================
-uniform int   TonemapOperator < ui_type = "combo"; ui_items = "ACES\0AgX\0Hable (Uncharted 2)\0Reinhard\0"; ui_label = "Tonemap Operator"; ui_tooltip = "AgX handles bright saturated colours (fire, sunsets, magic) more gracefully than ACES."; > = 1;
-uniform float TonemapWhite    < ui_type = "slider"; ui_min = 1.0; ui_max = 16.0; ui_step = 0.1; ui_label = "White Point (Hable/Reinhard)"; > = 4.0;
-uniform float Contrast        < ui_type = "slider"; ui_min = 0.5; ui_max = 2.0;  ui_step = 0.01; ui_label = "Contrast"; > = 1.0;
-uniform float Saturation      < ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01; ui_label = "Saturation"; > = 1.0;
+uniform int   TonemapOperator < ui_type = "combo"; ui_items = "ACES\0AgX\0Hable (Uncharted 2)\0Reinhard\0"; ui_label = "Tonemap Operator"; ui_tooltip = "Maps HDR-range light to a displayable image; each has a different look.\n\nACES: punchy, high contrast, cinematic, but skews bright saturated colours toward orange/white (hue shift).\n\nAgX: most colour-accurate at extremes - fire, sunsets and magic keep their hue instead of blowing to white. Flatter, neutral, modern default.\n\nHable (Uncharted 2): filmic toe/shoulder curve, cinematic contrast; often the most photographic. White Point is meaningful.\n\nReinhard: softest and flattest, a neutral reference. White Point only nudges the brightest highlights."; > = 1;
+uniform float TonemapWhite    < ui_type = "slider"; ui_min = 1.0; ui_max = 16.0; ui_step = 0.1; ui_label = "White Point (Hable/Reinhard)"; ui_tooltip = "Brightness that maps to pure white. On Hable it shifts the whole curve (very visible); on Reinhard it only affects the brightest highlights. Ignored by ACES/AgX."; > = 4.0;
+uniform float Contrast        < ui_type = "slider"; ui_min = 0.5; ui_max = 2.0;  ui_step = 0.01; ui_label = "Contrast"; ui_tooltip = "Tonal contrast around mid-grey (luminance-based, so it won't grey out or clip colours). Lower (~0.85) to flatten AgX/ACES punch for a softer, more filmic look."; > = 1.0;
+uniform float Saturation      < ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01; ui_label = "Saturation"; ui_tooltip = "Colour saturation. Nudge up (~1.1) to compensate for the flatness of AgX or a lowered Contrast."; > = 1.0;
 
 // ============================
 // AO
@@ -197,6 +206,16 @@ uniform float BloomStrength  < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; u
 uniform float BloomRadius    < ui_type = "slider"; ui_min = 0.5; ui_max = 2.0; ui_step = 0.05; ui_label = "Bloom Spread"; ui_tooltip = "Width of the glow (scales the upsample tent)."; > = 1.0;
 
 // ============================
+// GOD RAYS (volumetric light scattering from the brightest on-screen light)
+// ============================
+uniform bool  EnableGodrays   < ui_type = "checkbox"; ui_label = "Enable God Rays"; > = true;
+uniform float GodrayIntensity < ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01;  ui_label = "God Ray Intensity"; > = 0.5;
+uniform float GodrayThreshold < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0;  ui_step = 0.01;  ui_label = "God Ray Threshold"; ui_tooltip = "Brightness a pixel needs to emit shafts. Lower = fuller shafts from more of the sky."; > = 0.2;
+uniform float GodrayDensity   < ui_type = "slider"; ui_min = 0.1; ui_max = 1.0;  ui_step = 0.01;  ui_label = "God Ray Length"; ui_tooltip = "How far the shafts reach toward the light."; > = 0.6;
+uniform float GodrayDecay     < ui_type = "slider"; ui_min = 0.8; ui_max = 0.99; ui_step = 0.005; ui_label = "God Ray Decay"; ui_tooltip = "Falloff along each shaft. Higher = longer."; > = 0.95;
+uniform float GodraySkyBias    < ui_type = "slider"; ui_min = 0.0; ui_max = 64.0; ui_step = 1.0; ui_label = "God Ray Sky Bias"; ui_tooltip = "Higher = shafts come from the distant sky/sun, not nearby bright geometry (snowy mountains). 0 = any bright pixel. If god rays vanish when you raise this, your depth buffer doesn't mark the sky as far -> leave it at 0."; > = 0.0;
+
+// ============================
 // SHARPEN & GRAIN
 // ============================
 uniform bool  EnableSharpen < ui_type = "checkbox"; ui_label = "Enable Sharpen"; > = true;
@@ -207,4 +226,4 @@ uniform float GrainAmount   < ui_type = "slider"; ui_min = 0.0; ui_max = 0.07; u
 // ============================
 // DEBUG
 // ============================
-uniform int DebugMode < ui_type = "combo"; ui_items = "Off\0Depth\0Normals\0ViewPos\0CoC\0AO\0Contact\0SSR\0Bloom\0"; ui_label = "Debug View"; > = 0;
+uniform int DebugMode < ui_type = "combo"; ui_items = "Off\0Depth\0Normals\0ViewPos\0CoC\0AO\0Contact\0SSR\0Bloom\0Godrays\0"; ui_label = "Debug View"; > = 0;

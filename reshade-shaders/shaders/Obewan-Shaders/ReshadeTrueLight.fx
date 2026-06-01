@@ -572,6 +572,89 @@ float4 PS_BloomUp1(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
 float4 PS_BloomUp0(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(tex2D(BloomD0s, uv).rgb + Upsample9(BloomU1s, uv, ReShade::PixelSize *  4.0 * BloomRadius), 1.0); }
 
 // ============================
+// LIGHT POSITION + GOD RAYS
+// ============================
+
+// Luminance-weighted lightUV of the brightest areas -> the on-screen light
+// position. Temporally smoothed so it doesn't jitter. rg = UV, b = confidence.
+float4 PS_LightPos(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+{
+    const int N = 16;
+    float2 sumUV = 0.0;
+    float  sumW  = 0.0;
+
+    [loop]
+    for (int y = 0; y < N; ++y)
+    {
+        [loop]
+        for (int x = 0; x < N; ++x)
+        {
+            float2 g = (float2(x, y) + 0.5) / float(N);
+            float  l = tex2Dlod(LumCurrSampler, float4(g, 0, 0)).r;
+            float  w = max(l - GodrayThreshold, 0.0);
+            w *= w;
+            sumUV += g * w;
+            sumW  += w;
+        }
+    }
+
+    float2 lightUV = (sumW > 1e-5) ? sumUV / sumW : float2(0.5, 0.5);
+    float  conf = saturate(sumW / float(N * N) * 8.0);
+
+    float4 prev = tex2Dlod(LightPosPrevSampler, float4(0.5, 0.5, 0, 0));
+    float  rate = saturate(AdaptSpeed * frametime * 0.001);
+    if (prev.b <= 0.0) prev = float4(lightUV, conf, 1.0); // first-frame init
+
+    float2 smUV  = lerp(prev.rg, lightUV, rate);
+    float  smCnf = lerp(prev.b,  conf,     rate);
+    return float4(smUV, smCnf, 1.0);
+}
+
+float4 PS_LightPosCopy(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+{
+    return tex2Dlod(LightPosSampler, float4(0.5, 0.5, 0, 0));
+}
+
+// Bright source for the shafts. Only bright pixels (the sun / bright sky) emit;
+// dark geometry is zero here, so the radial accumulation is naturally broken up
+// by silhouettes — occlusion-by-darkness, no fragile sky-depth assumption.
+float4 PS_GodrayBright(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+{
+    if (!EnableGodrays) return float4(0.0, 0.0, 0.0, 1.0);
+    float3 c = ToLinear(tex2D(BackBuffer, uv).rgb);
+    float  l = max(Luma(c) - GodrayThreshold, 0.0);
+    l *= l;                                                  // emphasize the brightest source (the sun) over merely-bright snow
+    float  sky = pow(saturate(GetDepth(uv)), GodraySkyBias); // optional: bias emission toward the distant sky (0 = any bright pixel)
+    return float4(c * l * sky, 1.0);
+}
+
+// Radial scatter from the light position (GPU-Gems volumetric light shafts).
+float4 PS_Godray(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+{
+    if (!EnableGodrays) return float4(0.0, 0.0, 0.0, 1.0);
+
+    float2 lightPos = tex2Dlod(LightPosSampler, float4(0.5, 0.5, 0, 0)).rg;
+
+    const int SAMPLES = 48;
+    float2 delta = (uv - lightPos) * (GodrayDensity / float(SAMPLES));
+    float2 coord = uv;
+    float  illum = 1.0;
+    float3 sum = 0.0;
+
+    [loop]
+    for (int i = 0; i < SAMPLES; ++i)
+    {
+        coord -= delta;
+        sum += tex2D(GodrayBrightSampler, coord).rgb * illum;
+        illum *= GodrayDecay;
+    }
+
+    // Normalize the decay-weighted sum (geometric series ~ 1/(1-decay)) so the
+    // brightness stays stable across decay/sample settings.
+    return float4(sum * (1.0 - GodrayDecay), 1.0);
+}
+
+// ============================
 // EYE ADAPTATION (instant auto-exposure)
 // ============================
 float4 PS_LumDown(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
@@ -738,12 +821,20 @@ float3 ApplyTonemap(float3 c)
     return ToSRGB(c);
 }
 
-// Simple grading in display space (neutral at defaults).
+// Grading in display space (neutral at defaults).
 float3 ApplyGrade(float3 c)
 {
-    c = lerp(Luma(c).xxx, c, Saturation);     // saturation
-    c = saturate((c - 0.5) * Contrast + 0.5); // contrast around mid-grey
-    return c;
+    // Luminance contrast around mid-grey via an additive luma-delta shift (same
+    // offset on every channel). Flattens/expands the tonal range without the
+    // per-channel clipping of a multiplicative scale (which flashed saturated
+    // pixels) and without collapsing colour to grey.
+    float l  = Luma(c);
+    float lc = (l - 0.5) * Contrast + 0.5;
+    c += (lc - l);
+
+    // Saturation
+    c = lerp(Luma(c).xxx, c, Saturation);
+    return saturate(c);
 }
 
 // ============================
@@ -843,6 +934,11 @@ float4 PS_Composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     if (EnableBloom)
         c += tex2D(BloomU0s, uv).rgb * BloomStrength;
 
+    // God rays (linear, additive). The occluder-masked bright source self-gates
+    // (no bright sky -> no shafts), so no extra confidence gate is needed.
+    if (EnableGodrays)
+        c += tex2D(GodraySampler, uv).rgb * GodrayIntensity;
+
     // Tonemap + encode (selectable operator), then grading
     c = ApplyTonemap(c);
     c = ApplyGrade(c);
@@ -866,6 +962,7 @@ float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
         if (DebugMode == 6) { float cs = tex2D(ContactBlurSampler, uv).r; return float4(cs.xxx, 1.0); }
         if (DebugMode == 7) { float4 s = tex2D(SSRBlurSampler, uv); return float4(s.rgb * s.a, 1.0); }
         if (DebugMode == 8) { return float4(tex2D(BloomU0s, uv).rgb, 1.0); }
+        if (DebugMode == 9) { return float4(tex2D(GodraySampler, uv).rgb * GodrayIntensity, 1.0); }
     }
 
     float3 c = tex2D(CompositeSampler, uv).rgb;
@@ -898,6 +995,8 @@ technique ReshadeTrueLight
     pass LumDown        { VertexShader = PostProcessVS; PixelShader = PS_LumDown;       RenderTarget = LumCurrTex; }
     pass Adapt          { VertexShader = PostProcessVS; PixelShader = PS_Adapt;         RenderTarget = AdaptTex; }
     pass AdaptCopy      { VertexShader = PostProcessVS; PixelShader = PS_AdaptCopy;     RenderTarget = AdaptPrevTex; }
+    pass LightPos       { VertexShader = PostProcessVS; PixelShader = PS_LightPos;      RenderTarget = LightPosTex; }
+    pass LightPosCopy   { VertexShader = PostProcessVS; PixelShader = PS_LightPosCopy;  RenderTarget = LightPosPrevTex; }
 
     pass AOCompute      { VertexShader = PostProcessVS; PixelShader = PS_AOCompute;      RenderTarget = AORawTex; }
     pass AOBlur         { VertexShader = PostProcessVS; PixelShader = PS_AOBlur;         RenderTarget = AOBlurTex; }
@@ -919,6 +1018,9 @@ technique ReshadeTrueLight
     pass BloomUp2       { VertexShader = PostProcessVS; PixelShader = PS_BloomUp2;       RenderTarget = BloomU2; }
     pass BloomUp1       { VertexShader = PostProcessVS; PixelShader = PS_BloomUp1;       RenderTarget = BloomU1; }
     pass BloomUp0       { VertexShader = PostProcessVS; PixelShader = PS_BloomUp0;       RenderTarget = BloomU0; }
+
+    pass GodrayBright   { VertexShader = PostProcessVS; PixelShader = PS_GodrayBright;   RenderTarget = GodrayBrightTex; }
+    pass Godray         { VertexShader = PostProcessVS; PixelShader = PS_Godray;         RenderTarget = GodrayTex; }
 
     pass Composite      { VertexShader = PostProcessVS; PixelShader = PS_Composite;      RenderTarget = CompositeTex; }
 
