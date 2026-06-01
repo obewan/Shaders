@@ -1,7 +1,6 @@
 //===========================================================================
 // SKYRIM REALISTIC PIPELINE — ReshadeTrueLight
 // Author: Obewan (https://github.com/obewan)
-// Co-authors: Anthropic Claude, Microsoft Copilot, OpenAI ChatGPT, Google Gemini.
 // Version: 0.1.0
 // Requirement:
 //     - BlueNoise.png in reshade-shaders/Textures (only if UseBlueNoise = true)
