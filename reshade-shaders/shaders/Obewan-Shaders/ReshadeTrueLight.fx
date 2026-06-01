@@ -916,6 +916,14 @@ float3 ApplyTonemap(float3 c)
 // Grading in display space (neutral at defaults).
 float3 ApplyGrade(float3 c)
 {
+    // White balance: temperature (R-B axis) and tint (G axis), normalized by its
+    // own luminance so neutral grey keeps its brightness (colour shift only).
+    float t = WhiteTemp / 100.0;
+    float n = WhiteTint / 100.0;
+    float3 wb = float3(1.0 + 0.3 * t, 1.0 - 0.3 * n, 1.0 - 0.3 * t);
+    wb /= max(Luma(wb), 1e-4);
+    c *= wb;
+
     // Luminance contrast around mid-grey via an additive luma-delta shift (same
     // offset on every channel). Flattens/expands the tonal range without the
     // per-channel clipping of a multiplicative scale (which flashed saturated

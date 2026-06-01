@@ -157,6 +157,8 @@ uniform int   TonemapOperator < ui_type = "combo"; ui_items = "ACES\0AgX\0Hable 
 uniform float TonemapWhite    < ui_type = "slider"; ui_min = 1.0; ui_max = 16.0; ui_step = 0.1; ui_label = "White Point (Hable/Reinhard)"; ui_tooltip = "Brightness that maps to pure white. On Hable it shifts the whole curve (very visible); on Reinhard it only affects the brightest highlights. Ignored by ACES/AgX."; > = 4.0;
 uniform float Contrast        < ui_type = "slider"; ui_min = 0.5; ui_max = 2.0;  ui_step = 0.01; ui_label = "Contrast"; ui_tooltip = "Tonal contrast around mid-grey (luminance-based, so it won't grey out or clip colours). Lower (~0.85) to flatten AgX/ACES punch for a softer, more filmic look."; > = 1.0;
 uniform float Saturation      < ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01; ui_label = "Saturation"; ui_tooltip = "Colour saturation. Nudge up (~1.1) to compensate for the flatness of AgX or a lowered Contrast."; > = 1.0;
+uniform float WhiteTemp       < ui_type = "slider"; ui_min = -100.0; ui_max = 100.0; ui_step = 1.0; ui_label = "Temperature"; ui_tooltip = "White balance: warm/orange (+) to cool/blue (-). Luminance-preserving."; > = 0.0;
+uniform float WhiteTint       < ui_type = "slider"; ui_min = -100.0; ui_max = 100.0; ui_step = 1.0; ui_label = "Tint"; ui_tooltip = "White balance: magenta (+) to green (-). Luminance-preserving."; > = 0.0;
 
 // ============================
 // AO
