@@ -120,7 +120,10 @@ float ComputeAO(float2 uv)
     // Optionally grow the radius with distance to keep a stable screen footprint.
     float effRadius = AORadius + max(-p.z, 0.0) * AODistantRadius;
     float2 uvRadius = ViewRadiusToUV(p, effRadius);
-    float rnd = JitterUV(uv).x; // per-pixel offset to break up banding
+    // Static per-pixel rotation angle (no frame counter, so the blur can resolve it).
+    float rnd = Hash21(uv * float2(BUFFER_WIDTH, BUFFER_HEIGHT));
+    float ca = cos(rnd * 6.2831853);
+    float sa = sin(rnd * 6.2831853);
 
     float occlusion = 0.0;
 
@@ -129,9 +132,13 @@ float ComputeAO(float2 uv)
     {
         if (i >= samples) break;
 
-        // Spread samples across the whole disk (near->far), not a single ring.
-        float r = (float(i) + 0.5 + rnd) / float(samples); // 0..1 along radius
-        float2 sampleUV = uv + AO_Dirs[i] * uvRadius * r;
+        // Rotate the whole spiral per pixel (not just the radius): rotating the
+        // directions decorrelates neighbours so the bilateral blur resolves to
+        // clean, smooth AO instead of structured noise.
+        float  r  = (float(i) + 0.5) / float(samples); // 0..1 along radius
+        float2 d0 = AO_Dirs[i];
+        float2 dir = float2(d0.x * ca - d0.y * sa, d0.x * sa + d0.y * ca);
+        float2 sampleUV = uv + dir * uvRadius * r;
 
         float sd = GetDepth(sampleUV);
         if (sd <= 0.0 || sd >= 1.0) continue;
@@ -167,7 +174,7 @@ float ComputeGTAO(float2 uv)
 
     float effRadius = AORadius + max(-p.z, 0.0) * AODistantRadius;
     float2 radiusUV = ViewRadiusToUV(p, effRadius);
-    float rnd = JitterUV(uv).x + 0.5; // [0,1] slice rotation
+    float rnd = Hash21(uv * float2(BUFFER_WIDTH, BUFFER_HEIGHT)); // static slice rotation
 
     const int SLICES = 4;
     const int STEPS  = 4;
@@ -216,7 +223,8 @@ float ComputeGTAO(float2 uv)
     return lerp(ao, 1.0, saturate((d - AOFadeStart) / max(1e-4, AOFadeEnd - AOFadeStart)));
 }
 
-// Depth-aware blur / upsample (reads the half-res AO target).
+// Depth-aware blur / upsample (reads the half-res AO target). Wide 7x7 Gaussian
+// bilateral so the per-pixel rotated dither resolves to smooth AO.
 float BlurAO(float2 uv)
 {
     float centerD = GetDepth(uv);
@@ -226,17 +234,19 @@ float BlurAO(float2 uv)
     float wsum = 0.0;
 
     [loop]
-    for (int y = -2; y <= 2; ++y)
+    for (int y = -3; y <= 3; ++y)
     {
         [loop]
-        for (int x = -2; x <= 2; ++x)
+        for (int x = -3; x <= 3; ++x)
         {
-            float2 sUV = uv + float2(x, y) * step;
+            float2 o = float2(x, y);
+            float2 sUV = uv + o * step;
             float v = tex2D(AORawSampler, sUV).r;
             float sd = GetDepth(sUV);
-            float w = exp(-abs(centerD - sd) * 50.0);
-            sum += v * w;
-            wsum += w;
+            float gw = exp(-dot(o, o) * 0.18);          // gaussian spatial weight
+            float dw = exp(-abs(centerD - sd) * 50.0);  // bilateral depth weight
+            sum += v * gw * dw;
+            wsum += gw * dw;
         }
     }
     return sum / max(1e-6, wsum);
