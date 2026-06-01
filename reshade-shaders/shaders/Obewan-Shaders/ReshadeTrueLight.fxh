@@ -136,9 +136,12 @@ uniform float ManualExposure < ui_type = "slider"; ui_min = -4.0; ui_max = 4.0; 
 // AO
 // ============================
 uniform bool  EnableAO       < ui_type = "checkbox"; ui_label = "Enable AO"; > = true;
-uniform float AORadius       < ui_type = "slider"; ui_min = 0.05; ui_max = 20.0; ui_step = 0.05; ui_label = "AO Radius (world)"; > = 2.0;
+uniform int   AOMode         < ui_type = "combo"; ui_items = "SSAO (fast, low-end)\0GTAO (quality)\0"; ui_label = "AO Mode"; ui_tooltip = "SSAO: cheap disk sampling. GTAO: horizon-marched, more accurate, a bit heavier."; > = 0;
+uniform float AORadius       < ui_type = "slider"; ui_min = 0.05; ui_max = 20.0; ui_step = 0.05; ui_label = "AO Radius (world)"; > = 3.0;
 uniform int   AOSamples      < ui_type = "slider"; ui_min = 4;    ui_max = 12;   ui_step = 1;    ui_label = "AO Samples"; > = 12;
-uniform float AOStrength     < ui_type = "slider"; ui_min = 0.0;  ui_max = 2.0;  ui_step = 0.01; ui_label = "AO Strength"; > = 0.8;
+uniform float AOStrength     < ui_type = "slider"; ui_min = 0.0;  ui_max = 4.0;  ui_step = 0.01; ui_label = "AO Strength"; > = 1.6;
+uniform float AOPower        < ui_type = "slider"; ui_min = 0.5;  ui_max = 4.0;  ui_step = 0.05; ui_label = "AO Contrast (power)"; ui_tooltip = "Higher = deeper, more contrasty occlusion."; > = 2.0;
+uniform float AOBias         < ui_type = "slider"; ui_min = 0.0;  ui_max = 0.5;  ui_step = 0.005; ui_label = "AO Bias"; ui_tooltip = "Raise to reduce self-occlusion / flat-surface noise."; > = 0.03;
 
 // ============================
 // CONTACT SHADOWS

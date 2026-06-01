@@ -119,7 +119,7 @@ float ComputeAO(float2 uv)
 
     int samples = clamp(AOSamples, 4, AO_MAX_SAMPLES);
     float2 uvRadius = ViewRadiusToUV(p, AORadius);
-    float2 jitter = JitterUV(uv) * ReShade::PixelSize * 2.0;
+    float rnd = JitterUV(uv).x; // per-pixel offset to break up banding
 
     float occlusion = 0.0;
 
@@ -128,7 +128,9 @@ float ComputeAO(float2 uv)
     {
         if (i >= samples) break;
 
-        float2 sampleUV = uv + AO_Dirs[i] * uvRadius + jitter;
+        // Spread samples across the whole disk (near->far), not a single ring.
+        float r = (float(i) + 0.5 + rnd) / float(samples); // 0..1 along radius
+        float2 sampleUV = uv + AO_Dirs[i] * uvRadius * r;
 
         float sd = GetDepth(sampleUV);
         if (sd <= 0.0 || sd >= 1.0) continue;
@@ -138,15 +140,76 @@ float ComputeAO(float2 uv)
         float dist = length(v);
         if (dist < 1e-4) continue;
 
-        float nd = saturate(dot(n, v / dist));
-        float rangeAtten = saturate(1.0 - dist / (AORadius * 2.0));
-
-        occlusion += nd * rangeAtten;
+        // Occluded when the neighbour rises above the tangent plane (beyond bias),
+        // attenuated so distant samples count less.
+        float nd = dot(n, v / dist) - AOBias / max(dist, 1e-3);
+        float atten = saturate(1.0 - dist / AORadius);
+        occlusion += saturate(nd) * atten;
     }
 
     occlusion /= float(samples);
     float ao = saturate(1.0 - occlusion * AOStrength);
-    return pow(ao, 1.2);
+    return pow(ao, AOPower);
+}
+
+// GTAO/HBAO-style: march along screen-space slices and track the highest
+// occluder (horizon) on each side, instead of point-sampling a disk. More
+// accurate falloff and contact darkening; heavier than SSAO.
+float ComputeGTAO(float2 uv)
+{
+    float d = GetDepth(uv);
+    if (d <= 0.0 || d >= 1.0) return 1.0;
+
+    float3 p = ReconstructViewPos(uv);
+    float3 n = EstimateNormal(uv);
+
+    float2 radiusUV = ViewRadiusToUV(p, AORadius);
+    float rnd = JitterUV(uv).x + 0.5; // [0,1] slice rotation
+
+    const int SLICES = 4;
+    const int STEPS  = 4;
+    float occlusion = 0.0;
+
+    [loop]
+    for (int s = 0; s < SLICES; ++s)
+    {
+        float ang = (float(s) + rnd) * (3.14159265 / float(SLICES));
+        float2 dir = float2(cos(ang), sin(ang));
+
+        float hPlus = 0.0, hMinus = 0.0; // max elevation above tangent per side
+
+        [loop]
+        for (int k = 1; k <= STEPS; ++k)
+        {
+            float2 off = dir * radiusUV * ((float(k) - 0.5) / float(STEPS));
+
+            float2 uvA = uv + off;
+            float sdA = GetDepth(uvA);
+            if (sdA > 0.0 && sdA < 1.0)
+            {
+                float3 v = ReconstructViewPos(uvA) - p;
+                float l = length(v);
+                if (l > 1e-4)
+                    hPlus = max(hPlus, (dot(n, v) / l - AOBias) * saturate(1.0 - l / AORadius));
+            }
+
+            float2 uvB = uv - off;
+            float sdB = GetDepth(uvB);
+            if (sdB > 0.0 && sdB < 1.0)
+            {
+                float3 v = ReconstructViewPos(uvB) - p;
+                float l = length(v);
+                if (l > 1e-4)
+                    hMinus = max(hMinus, (dot(n, v) / l - AOBias) * saturate(1.0 - l / AORadius));
+            }
+        }
+
+        occlusion += (saturate(hPlus) + saturate(hMinus)) * 0.5;
+    }
+
+    occlusion /= float(SLICES);
+    float ao = saturate(1.0 - occlusion * AOStrength);
+    return pow(ao, AOPower);
 }
 
 // Depth-aware blur / upsample (reads the half-res AO target).
@@ -586,7 +649,9 @@ float3 TonemapACES(float3 x)
 // ============================
 float4 PS_AOCompute(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
-    float ao = EnableAO ? ComputeAO(uv) : 1.0;
+    float ao = 1.0;
+    if (EnableAO)
+        ao = (AOMode == 0) ? ComputeAO(uv) : ComputeGTAO(uv);
     return ao.xxxx;
 }
 float4 PS_AOBlur(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
