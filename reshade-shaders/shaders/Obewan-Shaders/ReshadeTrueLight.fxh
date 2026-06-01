@@ -161,6 +161,13 @@ uniform float WhiteTemp       < ui_type = "slider"; ui_min = -100.0; ui_max = 10
 uniform float WhiteTint       < ui_type = "slider"; ui_min = -100.0; ui_max = 100.0; ui_step = 1.0; ui_label = "Tint"; ui_tooltip = "White balance: magenta (+) to green (-). Luminance-preserving."; > = 0.0;
 
 // ============================
+// PURKINJE (night vision) — the eye's rod/scotopic shift in darkness
+// ============================
+uniform bool  EnablePurkinje    < ui_type = "checkbox"; ui_label = "Enable Purkinje (Night Vision)"; ui_tooltip = "Human vision desaturates and shifts blue in darkness (rod vision). Engages at night / in dungeons, off in daylight. It's eye physiology, not a camera effect."; > = true;
+uniform float PurkinjeStrength  < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "Purkinje Strength"; > = 0.5;
+uniform float PurkinjeThreshold < ui_type = "slider"; ui_min = 0.01; ui_max = 0.30; ui_step = 0.01; ui_label = "Purkinje Threshold"; ui_tooltip = "Scene darkness (adapted luminance) below which night vision kicks in. Higher = engages in brighter scenes."; > = 0.10;
+
+// ============================
 // AO
 // ============================
 uniform bool  EnableAO       < ui_type = "checkbox"; ui_label = "Enable AO"; > = true;

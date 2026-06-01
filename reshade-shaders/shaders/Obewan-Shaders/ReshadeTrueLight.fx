@@ -967,6 +967,24 @@ float3 ApplyGrade(float3 c)
     return saturate(c);
 }
 
+// Purkinje effect: in darkness human vision shifts to rod (scotopic) response —
+// desaturated and blue-shifted, with reds going dark. Gated by the adapted scene
+// luminance so it engages at night / in dungeons, not in daylight.
+float3 ApplyPurkinje(float3 c)
+{
+    float adapt = tex2Dlod(AdaptSampler, float4(0.5, 0.5, 0, 0)).r; // linear scene avg
+    float night = saturate(1.0 - adapt / max(PurkinjeThreshold, 1e-3));
+    if (night <= 0.0) return c;
+
+    float l = Luma(c);
+    float pix = saturate(1.0 - l * 1.5);               // bright spots (fire, torches) keep colour
+    float s = saturate(night * pix * PurkinjeStrength);
+
+    float rod = dot(c, float3(0.2, 0.5, 0.4));          // rod luminance (blue-green biased)
+    float3 scotopic = rod * float3(0.82, 0.94, 1.25);   // desaturated, cool blue
+    return lerp(c, scotopic, s);
+}
+
 // ============================
 // EFFECT PASS ENTRY POINTS
 // ============================
@@ -1080,6 +1098,7 @@ float4 PS_Composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     // Tonemap + encode (selectable operator), then grading
     c = ApplyTonemap(c);
     c = ApplyGrade(c);
+    if (EnablePurkinje) c = ApplyPurkinje(c);
 
     return float4(saturate(c), 1.0);
 }
