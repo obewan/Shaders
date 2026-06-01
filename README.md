@@ -38,7 +38,7 @@ Controls are organised into collapsible categories in the ReShade overlay. Typic
 
 ### Anti-aliasing
 
-ReshadeTrueLight intentionally does **not** include AA — a dedicated AA shader does it better. Use the game's AA, or a separate ReShade AA shader such as **CShade DLAA** or **SMAA**, and order it **before** ReshadeTrueLight in the technique list (so edges are cleaned before the lighting/sharpen work). Avoid Skyrim's native TAA if you use the depth-based effects — its per-frame jitter makes the depth buffer wobble and adds noise to AO/SSR.
+ReshadeTrueLight intentionally does **not** include AA — a dedicated AA shader does it better. Enable ReShade's built-in **SMAA** (no extra download) and order it **before** ReshadeTrueLight in the technique list, so edges are cleaned before the lighting/sharpen work. **CShade DLAA** is a good alternative if you prefer it. Avoid Skyrim's native TAA when using the depth-based effects — its per-frame jitter makes the depth buffer wobble and adds noise to AO/SSR.
 
 ### Installation
 
