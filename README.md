@@ -44,6 +44,13 @@ ReshadeTrueLight intentionally does **not** include AA — a dedicated AA shader
 
 Copy the contents of `reshade-shaders/` into your ReShade `reshade-shaders/` folder, then enable **ReshadeTrueLight** in the ReShade overlay.
 
+## Compatibility
+
+- **Community Shaders** — fully compatible, and the recommended pairing. Community Shaders handles engine-level lighting and GI; ReshadeTrueLight adds the screen-space post (reflections, god rays, fog, grading and the rest) on top.
+- **ENBSeries** — ENB and ReShade *can* run together, but it isn't recommended with this shader: ENB already provides its own ambient occlusion, bloom, depth of field and tonemapping, so the effects would double up. Use one or the other.
+
+Note: ENB and Community Shaders are mutually exclusive (you run one or the other), but ReshadeTrueLight, being a ReShade shader, works alongside either.
+
 ## Notes & limitations
 
 ReShade only has access to the final colour image and the depth buffer — not the engine's G-buffer. So effects that need real surface materials or light data (true GI, world-space height fog, sun-accurate shadows) are intentionally left to engine-level tools like **Community Shaders** or **ENBSeries**; ReshadeTrueLight focuses on the screen-space post that those don't fully cover.
