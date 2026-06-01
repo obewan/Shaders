@@ -238,6 +238,17 @@ uniform float LensFlareHalo      < ui_type = "slider"; ui_min = 0.0; ui_max = 0.
 uniform float LensFlareCA        < ui_type = "slider"; ui_min = 0.0; ui_max = 8.0;  ui_step = 0.1;  ui_label = "Lens Flare Chromatic Aberration"; > = 2.0;
 
 // ============================
+// FOG (distance / aerial perspective)
+// ============================
+uniform bool   EnableFog    < ui_type = "checkbox"; ui_label = "Enable Fog"; > = true;
+uniform float3 FogColor     < ui_type = "color"; ui_label = "Fog Color"; > = float3(0.62, 0.69, 0.80);
+uniform float  FogStart     < ui_type = "slider"; ui_min = 0.0;  ui_max = 1500.0;  ui_step = 10.0;    ui_label = "Fog Start (world)"; ui_tooltip = "Distance before fog begins."; > = 250.0;
+uniform float  FogDensity   < ui_type = "slider"; ui_min = 0.0;  ui_max = 0.003;   ui_step = 0.0001; ui_label = "Fog Density"; ui_tooltip = "How quickly fog accumulates with distance. Subtle is best (a little goes a long way)."; > = 0.0005;
+uniform float  FogMax       < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;     ui_step = 0.01;   ui_label = "Fog Max"; ui_tooltip = "Maximum fog opacity at the far distance."; > = 0.3;
+uniform float  FogSunAmount < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;    ui_step = 0.01;   ui_label = "Fog Sun Glow"; ui_tooltip = "Forward scattering: fog brightens toward the sun (its on-screen position)."; > = 0.5;
+uniform float3 FogSunColor  < ui_type = "color"; ui_label = "Fog Sun Color"; > = float3(1.0, 0.85, 0.6);
+
+// ============================
 // LOCAL CONTRAST (clarity)
 // ============================
 uniform bool  EnableClarity < ui_type = "checkbox"; ui_label = "Enable Clarity"; > = true;

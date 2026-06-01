@@ -878,6 +878,27 @@ float3 ApplyDither(float3 c, float2 uv)
     return c + t * (1.0 / 255.0);
 }
 
+// Distance/aerial fog (linear). Geometry fades toward the fog colour with
+// distance; the fog brightens toward the on-screen sun (forward scattering).
+// The sky (far depth) is left alone so only the scene hazes, not the zenith.
+float3 ApplyFog(float2 uv, float3 c)
+{
+    float d = GetDepth(uv);
+    if (d >= 1.0) return c; // sky
+
+    float dist = d * CameraFar;
+    float f = saturate((1.0 - exp(-max(dist - FogStart, 0.0) * FogDensity)) * FogMax);
+
+    float3 fogCol = ToLinear(FogColor);
+    if (FogSunAmount > 0.0)
+    {
+        float2 lp = tex2Dlod(LightPosSampler, float4(0.5, 0.5, 0, 0)).rg;
+        float toLight = saturate(1.0 - length(uv - lp) * 1.2);
+        fogCol = lerp(fogCol, ToLinear(FogSunColor), toLight * toLight * FogSunAmount);
+    }
+    return lerp(c, fogCol, f);
+}
+
 // ============================
 // TONEMAP (selectable operator) — each returns linear; ToSRGB is applied after.
 // ============================
@@ -1077,6 +1098,10 @@ float4 PS_Composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
         float4 ssr = tex2D(SSRBlurSampler, uv);
         c = lerp(c, ToLinear(ssr.rgb), saturate(ssr.a));
     }
+
+    // Distance fog (linear) before the light effects so haze blooms naturally
+    if (EnableFog)
+        c = ApplyFog(uv, c);
 
     // Bloom (linear, additive)
     if (EnableBloom)
