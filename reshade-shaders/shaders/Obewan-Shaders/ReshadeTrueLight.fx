@@ -654,6 +654,50 @@ float4 PS_Godray(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     return float4(sum * (1.0 - GodrayDecay), 1.0);
 }
 
+// Sample the bright source with a per-channel offset along `dir` -> chromatic
+// fringing on the flare (the coloured edges real lenses produce).
+float3 LensFlareSample(float2 uv, float2 dir)
+{
+    float3 ca = float3(-LensFlareCA, 0.0, LensFlareCA) * ReShade::PixelSize.x * 4.0;
+    return float3(
+        tex2D(BloomD1s, uv + dir * ca.r).r,
+        tex2D(BloomD1s, uv + dir * ca.g).g,
+        tex2D(BloomD1s, uv + dir * ca.b).b);
+}
+
+// Screen-space lens flare (Chapman): ghosts mirrored through the screen centre
+// plus a halo, sourced from the bloom prefilter (so it self-gates on brightness).
+float4 PS_LensFlare(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+{
+    if (!EnableLensFlare) return float4(0.0, 0.0, 0.0, 1.0);
+
+    float2 texcoord = 1.0 - uv;                                  // point-reflect through centre
+    float2 ghostVec = (float2(0.5, 0.5) - texcoord) * LensFlareDispersal;
+    float2 dir = ghostVec / (length(ghostVec) + 1e-4);
+
+    int ghosts = clamp(LensFlareGhosts, 1, 8);
+    float3 result = 0.0;
+
+    [loop]
+    for (int i = 0; i < 8; ++i)
+    {
+        if (i >= ghosts) break;
+        float2 offset = frac(texcoord + ghostVec * float(i));
+        float  w = length(float2(0.5, 0.5) - offset) / length(float2(0.5, 0.5));
+        w = pow(saturate(1.0 - w), 10.0);                       // brightest near centre
+        result += LensFlareSample(offset, dir) * w;
+    }
+
+    // Halo: a soft ring at a fixed offset toward the centre.
+    float2 haloVec = dir * LensFlareHalo;
+    float2 hoff = texcoord + haloVec;
+    float  wh = length(float2(0.5, 0.5) - frac(hoff)) / length(float2(0.5, 0.5));
+    wh = pow(saturate(1.0 - wh), 5.0);
+    result += LensFlareSample(hoff, dir) * wh;
+
+    return float4(result, 1.0);
+}
+
 // ============================
 // EYE ADAPTATION (instant auto-exposure)
 // ============================
@@ -939,6 +983,14 @@ float4 PS_Composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     if (EnableGodrays)
         c += tex2D(GodraySampler, uv).rgb * GodrayIntensity;
 
+    // Lens flare (linear, additive), faded toward the screen edges.
+    if (EnableLensFlare)
+    {
+        float2 dc = uv - 0.5;
+        float falloff = saturate(1.0 - dot(dc, dc) * 1.5);
+        c += tex2D(LensFlareSampler, uv).rgb * LensFlareIntensity * falloff;
+    }
+
     // Tonemap + encode (selectable operator), then grading
     c = ApplyTonemap(c);
     c = ApplyGrade(c);
@@ -963,6 +1015,7 @@ float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
         if (DebugMode == 7) { float4 s = tex2D(SSRBlurSampler, uv); return float4(s.rgb * s.a, 1.0); }
         if (DebugMode == 8) { return float4(tex2D(BloomU0s, uv).rgb, 1.0); }
         if (DebugMode == 9) { return float4(tex2D(GodraySampler, uv).rgb * GodrayIntensity, 1.0); }
+        if (DebugMode == 10) { return float4(tex2D(LensFlareSampler, uv).rgb * LensFlareIntensity, 1.0); }
     }
 
     float3 c = tex2D(CompositeSampler, uv).rgb;
@@ -1021,6 +1074,8 @@ technique ReshadeTrueLight
 
     pass GodrayBright   { VertexShader = PostProcessVS; PixelShader = PS_GodrayBright;   RenderTarget = GodrayBrightTex; }
     pass Godray         { VertexShader = PostProcessVS; PixelShader = PS_Godray;         RenderTarget = GodrayTex; }
+
+    pass LensFlare      { VertexShader = PostProcessVS; PixelShader = PS_LensFlare;      RenderTarget = LensFlareTex; }
 
     pass Composite      { VertexShader = PostProcessVS; PixelShader = PS_Composite;      RenderTarget = CompositeTex; }
 

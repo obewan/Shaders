@@ -99,6 +99,9 @@ texture2D LightPosPrevTex { Width = 1; Height = 1; Format = RGBA16F; }; BLOOM_SA
 texture2D GodrayBrightTex { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = RGBA16F; }; BLOOM_SAMP(GodrayBrightSampler, GodrayBrightTex)
 texture2D GodrayTex       { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = RGBA16F; }; BLOOM_SAMP(GodraySampler, GodrayTex)
 
+// Lens flare (ghosts + halo) — reuses the bloom prefilter as its bright source.
+texture2D LensFlareTex    { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = RGBA16F; }; BLOOM_SAMP(LensFlareSampler, LensFlareTex)
+
 // AO (computed at half-res, upsampled in the blur)
 texture2D AORawTex { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = R8; };
 sampler AORawSampler { Texture = AORawTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
@@ -216,6 +219,16 @@ uniform float GodrayDecay     < ui_type = "slider"; ui_min = 0.8; ui_max = 0.99;
 uniform float GodraySkyBias    < ui_type = "slider"; ui_min = 0.0; ui_max = 64.0; ui_step = 1.0; ui_label = "God Ray Sky Bias"; ui_tooltip = "Higher = shafts come from the distant sky/sun, not nearby bright geometry (snowy mountains). 0 = any bright pixel. If god rays vanish when you raise this, your depth buffer doesn't mark the sky as far -> leave it at 0."; > = 0.0;
 
 // ============================
+// LENS FLARE (screen-space ghosts + halo from the brightest areas)
+// ============================
+uniform bool  EnableLensFlare    < ui_type = "checkbox"; ui_label = "Enable Lens Flare"; > = true;
+uniform float LensFlareIntensity < ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01; ui_label = "Lens Flare Intensity"; > = 0.4;
+uniform int   LensFlareGhosts    < ui_type = "slider"; ui_min = 1;   ui_max = 8;    ui_step = 1;    ui_label = "Lens Flare Ghosts"; ui_tooltip = "Number of ghost reflections along the line through screen centre."; > = 4;
+uniform float LensFlareDispersal < ui_type = "slider"; ui_min = 0.1; ui_max = 0.6;  ui_step = 0.01; ui_label = "Lens Flare Dispersal"; ui_tooltip = "Spacing of the ghosts."; > = 0.3;
+uniform float LensFlareHalo      < ui_type = "slider"; ui_min = 0.0; ui_max = 0.8;  ui_step = 0.01; ui_label = "Lens Flare Halo Width"; > = 0.4;
+uniform float LensFlareCA        < ui_type = "slider"; ui_min = 0.0; ui_max = 8.0;  ui_step = 0.1;  ui_label = "Lens Flare Chromatic Aberration"; > = 2.0;
+
+// ============================
 // SHARPEN & GRAIN
 // ============================
 uniform bool  EnableSharpen < ui_type = "checkbox"; ui_label = "Enable Sharpen"; > = true;
@@ -226,4 +239,4 @@ uniform float GrainAmount   < ui_type = "slider"; ui_min = 0.0; ui_max = 0.07; u
 // ============================
 // DEBUG
 // ============================
-uniform int DebugMode < ui_type = "combo"; ui_items = "Off\0Depth\0Normals\0ViewPos\0CoC\0AO\0Contact\0SSR\0Bloom\0Godrays\0"; ui_label = "Debug View"; > = 0;
+uniform int DebugMode < ui_type = "combo"; ui_items = "Off\0Depth\0Normals\0ViewPos\0CoC\0AO\0Contact\0SSR\0Bloom\0Godrays\0Lens Flare\0"; ui_label = "Debug View"; > = 0;
