@@ -42,6 +42,32 @@ float2 JitterUV(float2 uv)
     return float2(n, n2) - 0.5;
 }
 
+// Noise value in [0,1]. Tiled blue noise (temporally animated, golden-ratio
+// value rotation to preserve its spectrum) when enabled, else a white-noise hash.
+// Blue noise is much less perceptible for grain and dithering.
+//
+// The temporal term animates the VALUE, never the coordinate: hashing
+// (pixel + frame counter) loses float precision as the frame counter grows,
+// which produced crawling vertical bands.
+float BlueNoise(float2 uv)
+{
+    float2 p = uv * float2(BUFFER_WIDTH, BUFFER_HEIGHT);
+    float anim = frac(float(FrameIndex) * 0.61803399); // bounded golden-ratio step
+
+    if (UseBlueNoise)
+    {
+        float v = tex2D(BlueNoiseSampler, frac(p * (1.0 / 64.0))).r;
+        return frac(v + anim);
+    }
+
+    // Robust per-pixel hash (Hoskins): reduces coordinate magnitude first, so it
+    // stays stable for large pixel coordinates.
+    float3 p3 = frac(p.xyx * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    float h = frac((p3.x + p3.y) * p3.z);
+    return frac(h + anim);
+}
+
 // Normalized linear depth in [0,1] (1 = far plane / sky).
 float GetDepth(float2 uv)
 {
@@ -775,37 +801,49 @@ float ComputeExposure()
 // ============================
 // SHARPEN & GRAIN (display space)
 // ============================
-// Unsharp mask on the processed composite. `focus` (0..1) suppresses sharpening
-// of out-of-focus (DoF-blurred) regions.
+// Contrast Adaptive Sharpening (AMD FidelityFX CAS, simplified): the sharpening
+// amount adapts to local contrast, so flat detail is sharpened but strong edges
+// are spared the haloes/crunch of a plain unsharp mask. Returned as a detail add
+// so the DoF blur is preserved; `focus` (0..1) skips out-of-focus regions.
 float3 SharpenPass(float2 uv, float3 c, float focus)
 {
     float2 t = ReShade::PixelSize;
-    float3 ctr = tex2D(CompositeSampler, uv).rgb;
-    float3 n = tex2D(CompositeSampler, uv + float2(0, -t.y)).rgb;
-    float3 s = tex2D(CompositeSampler, uv + float2(0,  t.y)).rgb;
-    float3 e = tex2D(CompositeSampler, uv + float2( t.x, 0)).rgb;
-    float3 w = tex2D(CompositeSampler, uv + float2(-t.x, 0)).rgb;
-    float3 blur = (ctr + n + s + e + w) / 5.0;
-    float3 detail = ctr - blur;
-    float weight = saturate((Luma(c) - 0.2) * 1.5);
-    return saturate(c + detail * Sharpness * weight * focus);
+    float3 a = tex2D(CompositeSampler, uv + t * float2(-1, -1)).rgb;
+    float3 b = tex2D(CompositeSampler, uv + t * float2( 0, -1)).rgb;
+    float3 cc= tex2D(CompositeSampler, uv + t * float2( 1, -1)).rgb;
+    float3 d = tex2D(CompositeSampler, uv + t * float2(-1,  0)).rgb;
+    float3 e = tex2D(CompositeSampler, uv).rgb;
+    float3 f = tex2D(CompositeSampler, uv + t * float2( 1,  0)).rgb;
+    float3 g = tex2D(CompositeSampler, uv + t * float2(-1,  1)).rgb;
+    float3 h = tex2D(CompositeSampler, uv + t * float2( 0,  1)).rgb;
+    float3 i = tex2D(CompositeSampler, uv + t * float2( 1,  1)).rgb;
+
+    float3 mn = min(min(min(a, b), min(cc, d)), min(min(e, f), min(min(g, h), i)));
+    float3 mx = max(max(max(a, b), max(cc, d)), max(max(e, f), max(max(g, h), i)));
+
+    float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
+    float3 w = -amp * lerp(0.0, 0.2, saturate(Sharpness)); // cross weights (negative = sharpen)
+    float3 cas = (e + (b + d + f + h) * w) / (1.0 + 4.0 * w);
+
+    return saturate(c + (cas - e) * focus); // add the sharpening detail, keep DoF
 }
 
+// Film grain: luminance-aware (peaks in midtones like real film, fades in
+// shadows/highlights) using blue noise when enabled. GrainSize controls coarseness.
 float3 ApplyGrain(float3 c, float2 uv)
 {
-    float2 scaled = uv * float2(BUFFER_WIDTH, BUFFER_HEIGHT);
-    float n = Hash21(scaled + float(FrameIndex));
-    float g = (n - 0.5) * 2.0 * GrainAmount;
-    return saturate(c + g.xxx);
+    float n = BlueNoise(uv / max(GrainSize, 1.0)) - 0.5;
+    float l = Luma(c);
+    float response = 4.0 * l * (1.0 - l); // 0 at black/white, 1 at mid-grey
+    return saturate(c + n * 2.0 * GrainAmount * response);
 }
 
-// Triangular-PDF dither (~1 LSB at 8-bit), animated. Breaks up banding on
-// smooth gradients such as the night sky without a visible grain look.
+// Triangular-PDF dither (~1 LSB at 8-bit). Blue noise when enabled gives the
+// least-perceptible result. Breaks up banding on smooth gradients (night sky).
 float3 ApplyDither(float3 c, float2 uv)
 {
-    float2 seed = uv * float2(BUFFER_WIDTH, BUFFER_HEIGHT) + float(FrameIndex);
-    float r1 = Hash21(seed);
-    float r2 = Hash21(seed + 17.31);
+    float r1 = BlueNoise(uv);
+    float r2 = BlueNoise(uv + 0.5);
     float t = r1 + r2 - 1.0; // triangular in [-1, 1]
     return c + t * (1.0 / 255.0);
 }

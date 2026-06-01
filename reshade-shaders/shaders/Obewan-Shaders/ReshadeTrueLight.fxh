@@ -135,7 +135,7 @@ sampler CompositeSampler { Texture = CompositeTex; MinFilter = LINEAR; MagFilter
 // BLUE-NOISE
 // Place BlueNoise.png in reshade-shaders/Textures. Default off to avoid load failures.
 // ============================
-uniform bool UseBlueNoise < ui_type = "checkbox"; ui_label = "Use Blue Noise"; > = false;
+uniform bool UseBlueNoise < ui_type = "checkbox"; ui_label = "Use Blue Noise"; ui_tooltip = "Use the blue-noise texture for grain and dithering (and SSR jitter) instead of white-noise hash. Less perceptible, more film-like. Requires bluenoise.png in reshade-shaders/textures."; > = false;
 texture2D BlueNoiseTex < source = "bluenoise.png"; pooled = true; > { Width = 64; Height = 64; Format = RGBA8; };
 sampler BlueNoiseSampler { Texture = BlueNoiseTex; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; AddressU = REPEAT; AddressV = REPEAT; };
 
@@ -232,9 +232,10 @@ uniform float LensFlareCA        < ui_type = "slider"; ui_min = 0.0; ui_max = 8.
 // SHARPEN & GRAIN
 // ============================
 uniform bool  EnableSharpen < ui_type = "checkbox"; ui_label = "Enable Sharpen"; > = true;
-uniform float Sharpness     < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0;  ui_step = 0.01;  ui_label = "Sharpness"; > = 0.25;
+uniform float Sharpness     < ui_type = "slider"; ui_min = 0.0; ui_max = 1.0;  ui_step = 0.01;  ui_label = "Sharpness"; ui_tooltip = "Contrast-adaptive sharpening: boosts fine detail while sparing strong edges from haloes/crunch."; > = 0.25;
 uniform bool  EnableGrain   < ui_type = "checkbox"; ui_label = "Enable Grain"; > = true;
-uniform float GrainAmount   < ui_type = "slider"; ui_min = 0.0; ui_max = 0.07; ui_step = 0.001; ui_label = "Grain Amount"; > = 0.02;
+uniform float GrainAmount   < ui_type = "slider"; ui_min = 0.0; ui_max = 0.10; ui_step = 0.001; ui_label = "Grain Amount"; ui_tooltip = "Film grain strength. Luminance-aware, so it peaks in midtones and fades in shadows/highlights."; > = 0.02;
+uniform float GrainSize     < ui_type = "slider"; ui_min = 1.0; ui_max = 4.0;  ui_step = 0.1;   ui_label = "Grain Size"; ui_tooltip = "Coarseness of the grain (1 = per-pixel, higher = chunkier)."; > = 1.0;
 
 // ============================
 // DEBUG
