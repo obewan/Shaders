@@ -256,12 +256,14 @@ float3 ReflectView(float3 viewDir, float3 normal)
     return normalize(viewDir - 2.0 * dot(viewDir, normal) * normal);
 }
 
+// Coarse linear march, then binary refinement + thickness rejection.
 bool SSR_Raymarch(float3 viewPos, float3 reflDir, out float2 hitUV)
 {
     hitUV = 0.0;
 
     int steps = clamp(SSRSteps, 8, SSR_MAX_STEPS);
     float stepSize = SSRMaxDistance / float(steps);
+    float3 prevPos = viewPos;
     float3 pos = viewPos;
 
     [loop]
@@ -269,6 +271,7 @@ bool SSR_Raymarch(float3 viewPos, float3 reflDir, out float2 hitUV)
     {
         if (i >= steps) break;
 
+        prevPos = pos;
         pos += reflDir * stepSize;
 
         float2 uv = ProjectToUV(pos);
@@ -278,12 +281,28 @@ bool SSR_Raymarch(float3 viewPos, float3 reflDir, out float2 hitUV)
         if (sd >= 1.0) continue;
 
         float3 sp = ReconstructViewPos(uv);
-        float distScene = length(sp - viewPos);
-        float distRay   = length(pos - viewPos);
-
-        if (distScene + stepSize * 0.5 < distRay)
+        if (length(sp - viewPos) + stepSize * 0.5 < length(pos - viewPos))
         {
-            hitUV = uv;
+            // Binary search between the last in-front sample and this one.
+            float3 a = prevPos, b = pos;
+            [loop]
+            for (int j = 0; j < 5; ++j)
+            {
+                float3 mid = (a + b) * 0.5;
+                float2 muv = ProjectToUV(mid);
+                float3 msp = ReconstructViewPos(muv);
+                if (length(msp - viewPos) < length(mid - viewPos)) b = mid; // mid behind surface
+                else a = mid;                                               // mid in front
+            }
+
+            float2 fuv = ProjectToUV(b);
+            float3 fsp = ReconstructViewPos(fuv);
+
+            // Reject if the surface lies far behind the ray (silhouette / gap bleed).
+            float thickness = length(b - viewPos) - length(fsp - viewPos);
+            if (abs(thickness) > SSRThickness) return false;
+
+            hitUV = fuv;
             return true;
         }
     }
@@ -297,8 +316,14 @@ float4 ComputeSSR(float2 uv)
 
     float3 viewPos = ReconstructViewPos(uv);
     float3 normal  = EstimateNormal(uv);
-    float3 viewDir = normalize(viewPos); // origin -> point
+    float3 viewDir = normalize(viewPos);   // camera -> surface (incident)
     float3 refl    = ReflectView(viewDir, normal);
+
+    // Schlick Fresnel: surfaces facing the camera (NPCs, walls head-on) reflect
+    // ~F0 (almost nothing); only grazing angles build up reflection. This is the
+    // key term that removes the "everything is a mirror" artifact.
+    float NdotV   = saturate(dot(normal, -viewDir));
+    float fresnel = SSRBaseReflect + (1.0 - SSRBaseReflect) * pow(1.0 - NdotV, 5.0);
 
     float2 hitUV;
     if (!SSR_Raymarch(viewPos, refl, hitUV))
@@ -309,7 +334,8 @@ float4 ComputeSSR(float2 uv)
     float edgeFade = edge.x * edge.y;
 
     float3 reflectedColor = tex2D(BackBuffer, hitUV).rgb; // sRGB scene color
-    return float4(reflectedColor, SSRStrength * edgeFade);
+    float weight = saturate(SSRStrength * fresnel * edgeFade);
+    return float4(reflectedColor, weight);
 }
 
 float4 BlurSSR(float2 uv)

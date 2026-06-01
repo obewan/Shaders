@@ -154,6 +154,8 @@ uniform bool  EnableSSR       < ui_type = "checkbox"; ui_label = "Enable SSR"; >
 uniform int   SSRSteps        < ui_type = "slider"; ui_min = 8;    ui_max = 32;    ui_step = 1;   ui_label = "SSR Steps"; > = 20;
 uniform float SSRMaxDistance  < ui_type = "slider"; ui_min = 1.0;  ui_max = 400.0; ui_step = 1.0; ui_label = "SSR Max Distance (world)"; > = 60.0;
 uniform float SSRStrength     < ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;   ui_step = 0.01; ui_label = "SSR Strength"; > = 0.5;
+uniform float SSRBaseReflect  < ui_type = "slider"; ui_min = 0.0;  ui_max = 0.2;   ui_step = 0.005; ui_label = "SSR Base Reflectivity (F0)"; ui_tooltip = "Head-on reflectivity. Keep low (~0.02) so only grazing angles reflect — this stops the 'mirror on NPC' look."; > = 0.02;
+uniform float SSRThickness    < ui_type = "slider"; ui_min = 0.5;  ui_max = 50.0;  ui_step = 0.5; ui_label = "SSR Thickness (world)"; ui_tooltip = "Reject hits where the scene lies far behind the ray (silhouette bleed). Raise if reflections vanish, lower if backgrounds smear into reflections."; > = 8.0;
 
 // ============================
 // DoF (focal range in world units; CoC mapped to pixel radius)
