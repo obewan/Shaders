@@ -257,6 +257,12 @@ uniform float ClarityAmount < ui_category = "Local Contrast"; ui_type = "slider"
 uniform float ClarityRadius < ui_category = "Local Contrast"; ui_type = "slider"; ui_min = 8.0; ui_max = 96.0; ui_step = 1.0; ui_label = "Clarity Radius (px)"; ui_tooltip = "Scale of the local contrast. Larger = broader, softer pop."; > = 40.0;
 
 // ============================
+// CHROMATIC ABERRATION (lateral, edge-weighted lens dispersion)
+// ============================
+uniform bool  EnableCA   < ui_category = "Chromatic Aberration"; ui_type = "checkbox"; ui_label = "Enable Chromatic Aberration"; ui_tooltip = "Lateral RGB dispersion that grows toward the frame edges, like a real lens. The centre stays sharp. An optical effect, applied before grain/dither."; > = true;
+uniform float CAStrength < ui_category = "Chromatic Aberration"; ui_type = "slider"; ui_min = 0.0; ui_max = 8.0; ui_step = 0.1; ui_label = "CA Strength (corner px)"; ui_tooltip = "Maximum red/blue split at the frame corners, in pixels (0 at the centre). Subtle is best (~1-2 px)."; > = 1.5;
+
+// ============================
 // SHARPEN & GRAIN
 // ============================
 uniform bool  EnableSharpen < ui_category = "Sharpen & Grain"; ui_type = "checkbox"; ui_label = "Enable Sharpen"; > = true;

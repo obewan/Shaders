@@ -26,6 +26,7 @@ An all-in-one realistic lighting & grading pipeline in a single technique (**v1.
 - Purkinje night-vision (the eye's rod/scotopic shift in darkness)
 
 **Finishing**
+- Chromatic aberration — lateral, edge-weighted lens dispersion (sharp centre)
 - Contrast-adaptive sharpening (CAS)
 - Luminance-aware film grain, blue-noise option, dithering
 

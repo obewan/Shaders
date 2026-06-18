@@ -31,17 +31,22 @@ float Luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
 float3 ToLinear(float3 c) { return pow(abs(c), 2.2); }
 float3 ToSRGB(float3 c)   { return pow(abs(c), 1.0 / 2.2); }
 
-// Animated per-pixel jitter in [-0.5, 0.5]. Uses blue noise when available.
+// STATIC per-pixel jitter in [-0.5, 0.5]. Uses blue noise when available.
+//
+// Intentionally NOT animated: like AO and contact shadows, SSR has no temporal
+// accumulation to average a per-frame jitter, so animating it would just make the
+// reflections crawl/shimmer frame-to-frame. The spatial BlurSSR pass resolves the
+// static dither instead. (Grain/dither still animate their VALUE — see BlueNoise.)
 float2 JitterUV(float2 uv)
 {
-    float fi = float(FrameIndex);
     if (UseBlueNoise)
     {
-        float2 bn = tex2D(BlueNoiseSampler, frac(uv * float2(BUFFER_WIDTH, BUFFER_HEIGHT) / 64.0 + fi * 0.137)).rg;
+        float2 bn = tex2D(BlueNoiseSampler, frac(uv * float2(BUFFER_WIDTH, BUFFER_HEIGHT) / 64.0)).rg;
         return bn - 0.5;
     }
-    float n  = Hash21(uv * 1024.0 + fi);
-    float n2 = Hash11(n + fi * 0.017);
+    float2 p = uv * float2(BUFFER_WIDTH, BUFFER_HEIGHT);
+    float n  = Hash21(p);
+    float n2 = Hash11(n);
     return float2(n, n2) - 0.5;
 }
 
@@ -1138,6 +1143,23 @@ float4 PS_Composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     return float4(saturate(c), 1.0);
 }
 
+// Lateral (transverse) chromatic aberration: split the red and blue channels
+// radially, the shift growing toward the frame edges like a real lens — the
+// centre stays perfectly sharp. Reads the finished composite; an optical effect,
+// so it runs before the sensor-side grain/dither.
+float3 ApplyEdgeCA(float2 uv)
+{
+    float2 d = uv - 0.5;
+    float  edge = saturate(dot(d, d) * 2.0);          // 0 at centre, ~1 at the corners
+    float2 dir  = d * rsqrt(dot(d, d) + 1e-8);         // radial direction
+    float2 off  = dir * edge * CAStrength * ReShade::PixelSize; // corner shift in px
+
+    float r = tex2D(CompositeSampler, uv + off).r;     // red drifts outward
+    float g = tex2D(CompositeSampler, uv).g;           // green stays put
+    float b = tex2D(CompositeSampler, uv - off).b;     // blue drifts inward
+    return float3(r, g, b);
+}
+
 // ============================
 // MAIN PASS — DoF over the composite, then sharpen / grain / dither / output.
 // ============================
@@ -1158,7 +1180,8 @@ float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
         if (DebugMode == 10) { return float4(tex2D(LensFlareSampler, uv).rgb * LensFlareIntensity, 1.0); }
     }
 
-    float3 c = tex2D(CompositeSampler, uv).rgb;
+    // Chromatic aberration first (optical effect, before the sensor grain/dither).
+    float3 c = EnableCA ? ApplyEdgeCA(uv) : tex2D(CompositeSampler, uv).rgb;
 
     // Depth of Field: blend the sharp composite toward the DoF-blurred composite.
     float focus = 1.0;
