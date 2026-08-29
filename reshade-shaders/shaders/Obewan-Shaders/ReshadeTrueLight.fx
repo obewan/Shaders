@@ -1,7 +1,7 @@
 //===========================================================================
 // SKYRIM REALISTIC PIPELINE — ReshadeTrueLight
 // Author: Obewan (https://github.com/obewan)
-// Version: 1.0.0
+// Version: 1.1.0
 // Requirement:
 //     - bluenoise.png in reshade-shaders/textures (only if Use Blue Noise = true)
 //     - a depth buffer correctly set (check it using the DisplayDepth shader)
@@ -11,6 +11,46 @@
 // frame view/projection matrices, so all effects are single-frame with spatial
 // bilateral filtering. The only cross-frame state is the 1x1 luminance/light
 // adaptation ping-pong (no reprojection needed).
+//
+//---------------------------------------------------------------------------
+// v1.1.0 - lighting pass
+//
+// New
+//   - Indirect light. The AO loop now also gathers each neighbour's lit colour
+//     using the SAME visibility weight it used for occlusion, so light returns
+//     exactly where the occlusion took it away. Added back modulated by the
+//     receiver's own colour (a stand-in for albedo), so a red wall bleeds red
+//     and dark surfaces stay dark. AO targets are RGBA16F now: rgb = bounce,
+//     a = occlusion. Not true GI - one screen-space bounce off the lit image.
+//   - Light source tracking, as its own concept and UI category. Two passes:
+//     find the brightest cell, then take the centroid of only the cells near
+//     that peak. The old single-pass luminance centroid landed BETWEEN the sun
+//     and a bright snowfield, i.e. on neither. Confidence now means "how bright
+//     is the brightest thing on screen" and gates god rays, lens flare and fog
+//     glow, so a windowless dungeon stops growing sun shafts.
+//   - Contact shadows march toward that tracked light instead of a hardcoded
+//     vector, so they swing with the sun through the day. Falls back to the old
+//     fixed direction on its own when no confident light is on screen.
+//
+// Fixed
+//   - God rays banded (48 fixed radii, no per-pixel offset) and streaked (the
+//     CLAMP sampler repeated border pixels into hard smears when the light sat
+//     near or off screen). Now dithered with interleaved gradient noise, and
+//     off-buffer taps are dropped.
+//   - Bloom ignored exposure: it was extracted from the raw scene and added
+//     post-exposure, so it quietly weakened at night as the eye adapted upward.
+//     Thresholded after exposure now, so the setting means one thing at any
+//     hour. Prefilter also Karis-weighted, so one blown pixel can't flicker the
+//     whole pyramid.
+//   - Exposure metered off 16 bilinear taps, roughly a sixteenth of the frame,
+//     and leaned on temporal smoothing to hide the wobble. 64 taps now, with
+//     optional centre weighting and log-average metering.
+//   - Fog sun glow used a raw UV distance, so it was an ellipse stretched
+//     horizontally on any non-square frame.
+//
+// Retuning note: Bloom Threshold and God Ray Threshold are measured AFTER
+// exposure as of this version, and log-average metering defaults on - existing
+// presets may want a nudge to Exposure Key and those two thresholds.
 //================================================================================
 
 #include "ReshadeTrueLight.fxh"
@@ -27,6 +67,29 @@ float Hash21(float2 p)
 }
 
 float Luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+
+// Interleaved gradient noise (Jimenez) in [0,1). Preferred over a white-noise
+// hash for staggering the start of a ray march: its error is spread evenly over
+// a tight neighbourhood, so a small blur or a bilinear upsample resolves it,
+// where white noise leaves speckle behind. Static, like every other jitter here.
+float IGN(float2 px)
+{
+    return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715))));
+}
+
+// Scene exposure gain. Defined here rather than beside the adaptation passes
+// because the bloom prefilter, the god ray source and the light tracker all run
+// before them and must threshold in the SAME post-exposure space. Otherwise
+// "bright enough to bloom" drifts away from "bright enough to be the sun" as the
+// eye adapts, and bloom silently weakens at night while the gain climbs.
+float ComputeExposure()
+{
+    if (!EnableAutoExposure)
+        return exp2(ManualExposure);
+
+    float avg = max(tex2Dlod(AdaptSampler, float4(0.5, 0.5, 0, 0)).r, 1e-4);
+    return clamp(ExposureKey / avg, ExposureMin, ExposureMax);
+}
 
 float3 ToLinear(float3 c) { return pow(abs(c), 2.2); }
 float3 ToSRGB(float3 c)   { return pow(abs(c), 1.0 / 2.2); }
@@ -139,13 +202,43 @@ float2 ViewRadiusToUV(float3 viewPos, float worldRadius)
     return float2(uvr / ReShade::AspectRatio, uvr);
 }
 
+// View-space direction from the scene toward the estimated key light (surface ->
+// light). ReShade has no sun vector, but the light's screen position plus the FOV
+// gives the direction it lies in, which is all a contact shadow needs. Blends
+// back to a fixed up/behind key light when nothing bright is confidently on
+// screen (interiors, overcast nights) so shadows don't swing at random.
+float3 GetSunDirView()
+{
+    static const float3 FALLBACK = float3(0.0, 0.70710678, 0.70710678);
+
+    float4 lp = tex2Dlod(LightPosSampler, float4(0.5, 0.5, 0, 0));
+
+    // Same unprojection convention as ReconstructViewPos: forward = -Z, y flipped.
+    float2 ndc = lp.rg * 2.0 - 1.0;
+    ndc.y = -ndc.y;
+    float t = tan(radians(CameraFovY) * 0.5);
+    float3 dir = normalize(float3(ndc.x * ReShade::AspectRatio * t, ndc.y * t, -1.0));
+
+    float track = saturate(LightTrackAmount * lp.b);
+    return normalize(lerp(FALLBACK, dir, track));
+}
+
+// How much to trust the tracked light this frame: a 0..1 multiplier for the
+// effects that only make sense when a real light is actually on screen.
+float LightGate()
+{
+    float conf = tex2Dlod(LightPosSampler, float4(0.5, 0.5, 0, 0)).b;
+    return lerp(1.0, saturate(conf), LightConfidenceGate);
+}
+
 // ============================
-// AO (half-res compute + bilateral upsample)
+// AO + INDIRECT BOUNCE (half-res compute + bilateral upsample)
+// Returns rgb = bounced radiance, a = occlusion.
 // ============================
-float ComputeAO(float2 uv)
+float4 ComputeAO(float2 uv)
 {
     float d = GetDepth(uv);
-    if (d <= 0.0 || d >= 1.0) return 1.0;
+    if (d <= 0.0 || d >= 1.0) return float4(0, 0, 0, 1);
 
     float3 p = ReconstructViewPos(uv);
     float3 n = EstimateNormal(uv);
@@ -159,7 +252,9 @@ float ComputeAO(float2 uv)
     float ca = cos(rnd * 6.2831853);
     float sa = sin(rnd * 6.2831853);
 
-    float occlusion = 0.0;
+    float  occlusion = 0.0;
+    float3 bounceSum = 0.0;   // visibility-weighted neighbour radiance
+    float  bounceW   = 0.0;
 
     [loop]
     for (int i = 0; i < AO_MAX_SAMPLES; ++i)
@@ -186,22 +281,39 @@ float ComputeAO(float2 uv)
         // attenuated so distant samples count less.
         float nd = dot(n, v / dist) - AOBias / max(dist, 1e-3);
         float atten = saturate(1.0 - dist / effRadius);
-        occlusion += saturate(nd) * atten;
+        float vis = saturate(nd) * atten;
+        occlusion += vis;
+
+        // Indirect bounce: a neighbour that occludes us is also facing us, so it
+        // reflects its own lit colour back. Weighting it by the SAME visibility
+        // term means the light returns exactly where the occlusion took it away.
+        if (EnableGI)
+        {
+            bounceSum += ToLinear(tex2Dlod(BackBuffer, float4(sampleUV, 0, 0)).rgb) * vis;
+            bounceW   += vis;
+        }
     }
 
     occlusion /= float(samples);
     float ao = pow(saturate(1.0 - occlusion * AOStrength), AOPower);
-    // Fade AO out at distance — far depth has poor precision and produces noise.
-    return lerp(ao, 1.0, saturate((d - AOFadeStart) / max(1e-4, AOFadeEnd - AOFadeStart)));
+
+    // Average bounce colour scaled by how occluded we are: a pixel that sees
+    // nothing gets no bleed, a deep crevice gets the most.
+    float3 bounce = (bounceW > 1e-5) ? (bounceSum / bounceW) * occlusion : float3(0, 0, 0);
+
+    // Fade AO (and the bounce with it) out at distance — far depth has poor
+    // precision and produces noise.
+    float fade = saturate((d - AOFadeStart) / max(1e-4, AOFadeEnd - AOFadeStart));
+    return float4(bounce * (1.0 - fade), lerp(ao, 1.0, fade));
 }
 
 // GTAO/HBAO-style: march along screen-space slices and track the highest
 // occluder (horizon) on each side, instead of point-sampling a disk. More
 // accurate falloff and contact darkening; heavier than SSAO.
-float ComputeGTAO(float2 uv)
+float4 ComputeGTAO(float2 uv)
 {
     float d = GetDepth(uv);
-    if (d <= 0.0 || d >= 1.0) return 1.0;
+    if (d <= 0.0 || d >= 1.0) return float4(0, 0, 0, 1);
 
     float3 p = ReconstructViewPos(uv);
     float3 n = EstimateNormal(uv);
@@ -212,7 +324,9 @@ float ComputeGTAO(float2 uv)
 
     const int SLICES = 4;
     const int STEPS  = 4;
-    float occlusion = 0.0;
+    float  occlusion = 0.0;
+    float3 bounceSum = 0.0;
+    float  bounceW   = 0.0;
 
     [loop]
     for (int s = 0; s < SLICES; ++s)
@@ -234,7 +348,16 @@ float ComputeGTAO(float2 uv)
                 float3 v = ReconstructViewPos(uvA) - p;
                 float l = length(v);
                 if (l > 1e-4)
-                    hPlus = max(hPlus, (dot(n, v) / l - AOBias) * saturate(1.0 - l / effRadius));
+                {
+                    float e = (dot(n, v) / l - AOBias) * saturate(1.0 - l / effRadius);
+                    hPlus = max(hPlus, e);
+                    if (EnableGI)
+                    {
+                        float w = saturate(e);
+                        bounceSum += ToLinear(tex2Dlod(BackBuffer, float4(uvA, 0, 0)).rgb) * w;
+                        bounceW   += w;
+                    }
+                }
             }
 
             float2 uvB = uv - off;
@@ -244,7 +367,16 @@ float ComputeGTAO(float2 uv)
                 float3 v = ReconstructViewPos(uvB) - p;
                 float l = length(v);
                 if (l > 1e-4)
-                    hMinus = max(hMinus, (dot(n, v) / l - AOBias) * saturate(1.0 - l / effRadius));
+                {
+                    float e = (dot(n, v) / l - AOBias) * saturate(1.0 - l / effRadius);
+                    hMinus = max(hMinus, e);
+                    if (EnableGI)
+                    {
+                        float w = saturate(e);
+                        bounceSum += ToLinear(tex2Dlod(BackBuffer, float4(uvB, 0, 0)).rgb) * w;
+                        bounceW   += w;
+                    }
+                }
             }
         }
 
@@ -253,18 +385,25 @@ float ComputeGTAO(float2 uv)
 
     occlusion /= float(SLICES);
     float ao = pow(saturate(1.0 - occlusion * AOStrength), AOPower);
-    // Fade AO out at distance — far depth has poor precision and produces noise.
-    return lerp(ao, 1.0, saturate((d - AOFadeStart) / max(1e-4, AOFadeEnd - AOFadeStart)));
+
+    // Same normalised form as the SSAO path (average bounce colour * occlusion),
+    // so switching AO mode doesn't change how strong the bleed reads.
+    float3 bounce = (bounceW > 1e-5) ? (bounceSum / bounceW) * occlusion : float3(0, 0, 0);
+
+    // Fade AO (and the bounce with it) out at distance — far depth has poor
+    // precision and produces noise.
+    float fade = saturate((d - AOFadeStart) / max(1e-4, AOFadeEnd - AOFadeStart));
+    return float4(bounce * (1.0 - fade), lerp(ao, 1.0, fade));
 }
 
 // Depth-aware blur / upsample (reads the half-res AO target). Wide 7x7 Gaussian
 // bilateral so the per-pixel rotated dither resolves to smooth AO.
-float BlurAO(float2 uv)
+float4 BlurAO(float2 uv)
 {
     float centerD = GetDepth(uv);
     float2 step = ReShade::PixelSize * 2.0; // half-res texel
 
-    float sum = 0.0;
+    float4 sum = 0.0;
     float wsum = 0.0;
 
     [loop]
@@ -275,7 +414,7 @@ float BlurAO(float2 uv)
         {
             float2 o = float2(x, y);
             float2 sUV = uv + o * step;
-            float v = tex2D(AORawSampler, sUV).r;
+            float4 v = tex2D(AORawSampler, sUV);
             float sd = GetDepth(sUV);
             float gw = exp(-dot(o, o) * 0.18);          // gaussian spatial weight
             float dw = exp(-abs(centerD - sd) * 50.0);  // bilateral depth weight
@@ -297,7 +436,10 @@ float ComputeContact(float2 uv)
     float3 p = ReconstructViewPos(uv);
     float3 n = EstimateNormal(uv);
 
-    float3 L = normalize(float3(0.0, -0.7, -0.7)); // fixed key-light direction
+    // Direction the light travels (light -> surface), from the tracked on-screen
+    // sun. Contact shadows now swing with the sun through the day instead of
+    // always falling the same way.
+    float3 L = -GetSunDirView();
     float ndotl = saturate(dot(n, -L));
     if (ndotl < 0.05) return 1.0;
 
@@ -557,6 +699,10 @@ float3 BloomPrefilter(float3 c)
     return c * contrib;
 }
 
+// Karis average weight: dims a tap in proportion to its own brightness, so one
+// blown-out pixel can't dominate (and flicker) the whole bloom pyramid.
+float KarisWeight(float3 c) { return 1.0 / (1.0 + Luma(c)); }
+
 // 13-tap downsample (overlapping 4-sample boxes) — smooth, firefly-resistant.
 float3 Downsample13(sampler s, float2 uv, float2 t)
 {
@@ -596,9 +742,48 @@ float3 Upsample9(sampler s, float2 uv, float2 t)
     return (e * 4.0 + (b + d + f + h) * 2.0 + (a + c + g + i)) * (1.0 / 16.0);
 }
 
+// Same 13 taps as Downsample13, but each of the five overlapping boxes is
+// weighted by its Karis average. Only worth the extra maths on the first
+// downsample, where the full-res fireflies actually live.
+float3 Downsample13Karis(sampler s, float2 uv, float2 t)
+{
+    float3 a = ToLinear(tex2D(s, uv + t * float2(-2, -2)).rgb);
+    float3 b = ToLinear(tex2D(s, uv + t * float2( 0, -2)).rgb);
+    float3 c = ToLinear(tex2D(s, uv + t * float2( 2, -2)).rgb);
+    float3 d = ToLinear(tex2D(s, uv + t * float2(-2,  0)).rgb);
+    float3 e = ToLinear(tex2D(s, uv + t * float2( 0,  0)).rgb);
+    float3 f = ToLinear(tex2D(s, uv + t * float2( 2,  0)).rgb);
+    float3 g = ToLinear(tex2D(s, uv + t * float2(-2,  2)).rgb);
+    float3 h = ToLinear(tex2D(s, uv + t * float2( 0,  2)).rgb);
+    float3 i = ToLinear(tex2D(s, uv + t * float2( 2,  2)).rgb);
+    float3 j = ToLinear(tex2D(s, uv + t * float2(-1, -1)).rgb);
+    float3 k = ToLinear(tex2D(s, uv + t * float2( 1, -1)).rgb);
+    float3 l = ToLinear(tex2D(s, uv + t * float2(-1,  1)).rgb);
+    float3 m = ToLinear(tex2D(s, uv + t * float2( 1,  1)).rgb);
+
+    float3 b0 = (j + k + l + m) * 0.25;   // centre box
+    float3 b1 = (a + b + d + e) * 0.25;
+    float3 b2 = (b + c + e + f) * 0.25;
+    float3 b3 = (d + e + g + h) * 0.25;
+    float3 b4 = (e + f + h + i) * 0.25;
+
+    float w0 = KarisWeight(b0) * 0.5;     // same box weights as Downsample13
+    float w1 = KarisWeight(b1) * 0.125;
+    float w2 = KarisWeight(b2) * 0.125;
+    float w3 = KarisWeight(b3) * 0.125;
+    float w4 = KarisWeight(b4) * 0.125;
+
+    return (b0 * w0 + b1 * w1 + b2 * w2 + b3 * w3 + b4 * w4)
+         / max(w0 + w1 + w2 + w3 + w4, 1e-4);
+}
+
 float4 PS_BloomPrefilter(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
-    float3 c = ToLinear(Downsample13(BackBuffer, uv, ReShade::PixelSize));
+    // Threshold AFTER exposure, so Bloom Threshold means the same thing at noon
+    // and at midnight. Previously bloom was extracted from the raw scene and
+    // added post-exposure, so as the eye adapted upward at night the bloom stayed
+    // put and quietly became weaker relative to the image.
+    float3 c = Downsample13Karis(BackBuffer, uv, ReShade::PixelSize) * ComputeExposure();
     return float4(BloomPrefilter(c), 1.0);
 }
 
@@ -624,9 +809,14 @@ float4 PS_BloomUp0(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
 float4 PS_LightPos(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
     const int N = 16;
-    float2 sumUV = 0.0;
-    float  sumW  = 0.0;
+    float exposure = ComputeExposure(); // meter in the same space as bloom/god rays
 
+    // Pass 1 — find the single brightest cell. A plain luminance centroid over
+    // everything above the threshold lands halfway between the sun and a bright
+    // snowfield, i.e. on neither, which is why shafts used to radiate from empty
+    // sky on snowy exteriors.
+    float  peak   = 0.0;
+    float2 peakUV = float2(0.5, 0.5);
     [loop]
     for (int y = 0; y < N; ++y)
     {
@@ -634,20 +824,46 @@ float4 PS_LightPos(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
         for (int x = 0; x < N; ++x)
         {
             float2 g = (float2(x, y) + 0.5) / float(N);
-            float  l = tex2Dlod(LumCurrSampler, float4(g, 0, 0)).r;
-            float  w = max(l - GodrayThreshold, 0.0);
+            float  l = tex2Dlod(LumCurrSampler, float4(g, 0, 0)).r * exposure;
+            if (l > peak) { peak = l; peakUV = g; }
+        }
+    }
+
+    // Pass 2 — centroid of only the cells near that peak, which gives sub-cell
+    // precision on the actual light while ignoring merely-bright background.
+    float thr = max(GodrayThreshold, peak * LightPeakBias);
+    float2 sumUV = 0.0;
+    float  sumW  = 0.0;
+    [loop]
+    for (int y2 = 0; y2 < N; ++y2)
+    {
+        [loop]
+        for (int x2 = 0; x2 < N; ++x2)
+        {
+            float2 g = (float2(x2, y2) + 0.5) / float(N);
+            float  l = tex2Dlod(LumCurrSampler, float4(g, 0, 0)).r * exposure;
+            float  w = max(l - thr, 0.0);
             w *= w;
             sumUV += g * w;
             sumW  += w;
         }
     }
 
-    float2 lightUV = (sumW > 1e-5) ? sumUV / sumW : float2(0.5, 0.5);
-    float  conf = saturate(sumW / float(N * N) * 8.0);
+    // Fall back to the peak cell, not the screen centre: at a high Peak Lock the
+    // threshold can sit at (or above) the peak itself and zero every weight, and
+    // snapping the light to the middle of the screen would visibly swing the
+    // shafts and the contact shadows.
+    float2 lightUV = (sumW > 1e-6) ? sumUV / sumW : peakUV;
+
+    // Confidence is now "how bright is the brightest thing on screen", which is
+    // what the consumers actually want to gate on — a dark dungeon scores 0.
+    float conf = saturate((peak - GodrayThreshold) * 4.0);
 
     float4 prev = tex2Dlod(LightPosPrevSampler, float4(0.5, 0.5, 0, 0));
     float  rate = saturate(AdaptSpeed * frametime * 0.001);
-    if (prev.b <= 0.0) prev = float4(lightUV, conf, 1.0); // first-frame init
+    // Init off alpha, not confidence: confidence is legitimately 0 in the dark,
+    // which would otherwise re-init (and so never smooth) every frame indoors.
+    if (prev.a <= 0.0) prev = float4(lightUV, conf, 1.0);
 
     float2 smUV  = lerp(prev.rg, lightUV, rate);
     float  smCnf = lerp(prev.b,  conf,     rate);
@@ -665,7 +881,7 @@ float4 PS_LightPosCopy(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
 float4 PS_GodrayBright(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
     if (!EnableGodrays) return float4(0.0, 0.0, 0.0, 1.0);
-    float3 c = ToLinear(tex2D(BackBuffer, uv).rgb);
+    float3 c = ToLinear(tex2D(BackBuffer, uv).rgb) * ComputeExposure();
     float  l = max(Luma(c) - GodrayThreshold, 0.0);
     l *= l;                                                  // emphasize the brightest source (the sun) over merely-bright snow
     float  sky = pow(saturate(GetDepth(uv)), GodraySkyBias); // optional: bias emission toward the distant sky (0 = any bright pixel)
@@ -681,7 +897,14 @@ float4 PS_Godray(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 
     const int SAMPLES = 48;
     float2 delta = (uv - lightPos) * (GodrayDensity / float(SAMPLES));
-    float2 coord = uv;
+
+    // Static per-pixel start offset. Without it every pixel samples the same
+    // radii and the shafts show concentric banding. Static (not animated) for the
+    // usual reason: there is no temporal accumulation here to average an animated
+    // jitter, so it would crawl instead. The half-res -> full-res upsample does
+    // the resolving.
+    float  jitter = IGN(uv * float2(BUFFER_WIDTH, BUFFER_HEIGHT));
+    float2 coord = uv - delta * jitter;
     float  illum = 1.0;
     float3 sum = 0.0;
 
@@ -689,13 +912,17 @@ float4 PS_Godray(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     for (int i = 0; i < SAMPLES; ++i)
     {
         coord -= delta;
-        sum += tex2D(GodrayBrightSampler, coord).rgb * illum;
+        // The sampler CLAMPs, so a tap past the edge would repeat the border
+        // pixel and smear it into a hard streak whenever the light sits near or
+        // off screen. Drop those taps instead of letting them accumulate.
+        float2 inside = step(float2(0.0, 0.0), coord) * step(coord, float2(1.0, 1.0));
+        sum += tex2D(GodrayBrightSampler, coord).rgb * illum * (inside.x * inside.y);
         illum *= GodrayDecay;
     }
 
     // Normalize the decay-weighted sum (geometric series ~ 1/(1-decay)) so the
     // brightness stays stable across decay/sample settings.
-    return float4(sum * (1.0 - GodrayDecay), 1.0);
+    return float4(sum * (1.0 - GodrayDecay) * LightGate(), 1.0);
 }
 
 // Sample the bright source with a per-channel offset along `dir` -> chromatic
@@ -764,21 +991,40 @@ float4 PS_LumDown(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     return (sum / float(K)).xxxx;
 }
 
-// Coarse scene-average luminance from the 64x64 downsample.
+// Scene luminance from the 64x64 downsample, on an 8x8 grid (was 4x4, which
+// metered off roughly a sixteenth of the frame and needed heavy temporal
+// smoothing to hide the resulting wobble).
 float SceneAvgLuma()
 {
+    const int N = 8;
     float sum = 0.0;
+    float wsum = 0.0;
+
     [loop]
-    for (int y = 0; y < 4; ++y)
+    for (int y = 0; y < N; ++y)
     {
         [loop]
-        for (int x = 0; x < 4; ++x)
+        for (int x = 0; x < N; ++x)
         {
-            float2 g = (float2(x, y) + 0.5) / 4.0;
-            sum += tex2Dlod(LumCurrSampler, float4(g, 0, 0)).r;
+            float2 g = (float2(x, y) + 0.5) / float(N);
+            float  l = tex2Dlod(LumCurrSampler, float4(g, 0, 0)).r;
+
+            // Centre weighting: exposure should follow what the player is looking
+            // at, not a bright corner of sky.
+            float2 dc = g - 0.5;
+            float  w = lerp(1.0, exp(-dot(dc, dc) * 5.0), MeteringCenterWeight);
+
+            // Log (geometric) mean: a small very bright region — the sun, a torch
+            // — barely moves it, where an arithmetic mean gets dragged up by it
+            // and the exposure then crushes the rest of the scene dark.
+            sum  += (MeteringLogAverage ? log(max(l, 1e-4)) : l) * w;
+            wsum += w;
         }
     }
-    return max(sum / 16.0, 1e-4);
+
+    float avg = sum / max(wsum, 1e-4);
+    if (MeteringLogAverage) avg = exp(avg);
+    return max(avg, 1e-4);
 }
 
 // Smoothly approach the current scene average (frame-rate independent).
@@ -795,15 +1041,6 @@ float4 PS_Adapt(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 float4 PS_AdaptCopy(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
     return tex2Dlod(AdaptSampler, float4(0.5, 0.5, 0, 0)).r.xxxx;
-}
-
-float ComputeExposure()
-{
-    if (!EnableAutoExposure)
-        return exp2(ManualExposure);
-
-    float avg = max(tex2Dlod(AdaptSampler, float4(0.5, 0.5, 0, 0)).r, 1e-4);
-    return clamp(ExposureKey / avg, ExposureMin, ExposureMax);
 }
 
 // ============================
@@ -901,8 +1138,11 @@ float3 ApplyFog(float2 uv, float3 c)
     if (FogSunAmount > 0.0)
     {
         float2 lp = tex2Dlod(LightPosSampler, float4(0.5, 0.5, 0, 0)).rg;
-        float toLight = saturate(1.0 - length(uv - lp) * 1.2);
-        fogCol = lerp(fogCol, ToLinear(FogSunColor), toLight * toLight * FogSunAmount);
+        // Aspect-correct the distance, or the glow is an ellipse stretched
+        // horizontally on any non-square frame.
+        float2 dl = (uv - lp) * float2(ReShade::AspectRatio, 1.0);
+        float toLight = saturate(1.0 - length(dl) * 1.2);
+        fogCol = lerp(fogCol, ToLinear(FogSunColor), toLight * toLight * FogSunAmount * LightGate());
     }
 
     // Darken the fog in dark scenes (night) using the adapted scene luminance —
@@ -1026,14 +1266,14 @@ float3 ApplyPurkinje(float3 c)
 // ============================
 float4 PS_AOCompute(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
-    float ao = 1.0;
-    if (EnableAO)
-        ao = (AOMode == 0) ? ComputeAO(uv) : ComputeGTAO(uv);
-    return ao.xxxx;
+    // The bounce gather rides along in the AO loop, so this pass also runs when
+    // only indirect light is wanted. rgb = bounce, a = occlusion.
+    if (!EnableAO && !EnableGI) return float4(0, 0, 0, 1);
+    return (AOMode == 0) ? ComputeAO(uv) : ComputeGTAO(uv);
 }
 float4 PS_AOBlur(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
-    return BlurAO(uv).xxxx;
+    return BlurAO(uv);
 }
 
 float4 PS_ContactCompute(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
@@ -1095,10 +1335,27 @@ float4 PS_DoFGatherV(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 float4 PS_Composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
     float3 c = ToLinear(tex2D(BackBuffer, uv).rgb);
+    float3 albedo = c;   // stands in for surface albedo; ReShade can't read the real one
 
-    // AO (linear, pre-tonemap)
-    if (EnableAO)
-        c *= tex2D(AOBlurSampler, uv).r;
+    // AO + indirect bounce (linear, pre-tonemap)
+    if (EnableAO || EnableGI)
+    {
+        float4 ao = tex2D(AOBlurSampler, uv);
+
+        if (EnableAO)
+            c *= ao.a;
+
+        // Bounced light goes back in modulated by the receiver's own colour, so a
+        // red wall bleeds red and dark surfaces stay dark rather than everything
+        // lifting toward grey. This is where AO stops reading as painted-on dirt:
+        // the crevice is still darker, but it is now filled with light of the
+        // right colour instead of neutral black.
+        if (EnableGI)
+        {
+            float3 bounce = lerp(Luma(ao.rgb).xxx, ao.rgb, GISaturation);
+            c += bounce * albedo * (GIStrength * 2.0);
+        }
+    }
 
     // Contact shadows (linear)
     if (EnableContact)
@@ -1122,17 +1379,19 @@ float4 PS_Composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     if (EnableBloom)
         c += tex2D(BloomU0s, uv).rgb * BloomStrength;
 
-    // God rays (linear, additive). The occluder-masked bright source self-gates
-    // (no bright sky -> no shafts), so no extra confidence gate is needed.
+    // God rays (linear, additive). The bright source self-gates on brightness and
+    // the scatter pass already applied the light-confidence gate.
     if (EnableGodrays)
         c += tex2D(GodraySampler, uv).rgb * GodrayIntensity;
 
-    // Lens flare (linear, additive), faded toward the screen edges.
+    // Lens flare (linear, additive), faded toward the screen edges and gated on
+    // light confidence — a lens flare with no light in frame is the tell that the
+    // tracker is guessing.
     if (EnableLensFlare)
     {
         float2 dc = uv - 0.5;
         float falloff = saturate(1.0 - dot(dc, dc) * 1.5);
-        c += tex2D(LensFlareSampler, uv).rgb * LensFlareIntensity * falloff;
+        c += tex2D(LensFlareSampler, uv).rgb * LensFlareIntensity * falloff * LightGate();
     }
 
     // Tonemap + encode (selectable operator), then grading
@@ -1172,12 +1431,23 @@ float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
         if (DebugMode == 2) { float3 n = EstimateNormal(uv); return float4(n * 0.5 + 0.5, 1.0); }
         if (DebugMode == 3) { float3 p = ReconstructViewPos(uv); return float4(frac(abs(p) * 0.1), 1.0); }
         if (DebugMode == 4) { float coc = ComputeCoCNorm(uv); return float4(coc.xxx, 1.0); }
-        if (DebugMode == 5) { float ao = tex2D(AOBlurSampler, uv).r; return float4(ao.xxx, 1.0); }
+        if (DebugMode == 5) { float ao = tex2D(AOBlurSampler, uv).a; return float4(ao.xxx, 1.0); }
         if (DebugMode == 6) { float cs = tex2D(ContactBlurSampler, uv).r; return float4(cs.xxx, 1.0); }
         if (DebugMode == 7) { float4 s = tex2D(SSRBlurSampler, uv); return float4(s.rgb * s.a, 1.0); }
         if (DebugMode == 8) { return float4(tex2D(BloomU0s, uv).rgb, 1.0); }
         if (DebugMode == 9) { return float4(tex2D(GodraySampler, uv).rgb * GodrayIntensity, 1.0); }
         if (DebugMode == 10) { return float4(tex2D(LensFlareSampler, uv).rgb * LensFlareIntensity, 1.0); }
+        if (DebugMode == 11) { return float4(ToSRGB(tex2D(AOBlurSampler, uv).rgb * GIStrength * 2.0), 1.0); }
+        if (DebugMode == 12)
+        {
+            // Crosshair on the tracked light, tinted by confidence (red = not
+            // trusted, green = trusted). Handy for checking Peak Lock.
+            float4 lp = tex2Dlod(LightPosSampler, float4(0.5, 0.5, 0, 0));
+            float2 d = (uv - lp.rg) * float2(ReShade::AspectRatio, 1.0);
+            float mark = saturate(1.0 - min(abs(d.x), abs(d.y)) * 400.0);
+            float3 base = tex2D(CompositeSampler, uv).rgb * 0.35;
+            return float4(base + mark * float3(1.0 - lp.b, lp.b, 0.0), 1.0);
+        }
     }
 
     // Chromatic aberration first (optical effect, before the sensor grain/dither).
