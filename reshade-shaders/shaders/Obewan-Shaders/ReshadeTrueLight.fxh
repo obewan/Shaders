@@ -1,7 +1,7 @@
 //===========================================================================
 // SKYRIM REALISTIC PIPELINE — ReshadeTrueLight Header
 // Author: Obewan (https://github.com/obewan)
-// Version: 1.0.0
+// Version: 1.1.0
 // Requirements
 //   - bluenoise.png in reshade-shaders/textures if Use Blue Noise = true
 //   - A working depth buffer (verify with the stock DisplayDepth shader)
@@ -10,6 +10,12 @@
 // feed per-frame view/projection matrices into a uniform, so the previous
 // reprojection path could never work without a custom C++ addon. All effects
 // are now single-frame and rely on spatial bilateral filtering for stability.
+//
+// v1.1.0 added two UI categories - "Indirect Light" (screen-space colour
+// bleeding, gathered by the AO pass) and "Light Source" (the shared brightest-
+// on-screen-light estimate that god rays, lens flare, fog glow and contact
+// shadows all read). The AO render targets changed from R8 to RGBA16F to carry
+// the bounce alongside the occlusion. See the .fx header for the full list.
 //===========================================================================
 
 #include "ReShadeUI.fxh"
@@ -102,10 +108,12 @@ texture2D GodrayTex       { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Fo
 // Lens flare (ghosts + halo) — reuses the bloom prefilter as its bright source.
 texture2D LensFlareTex    { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = RGBA16F; }; BLOOM_SAMP(LensFlareSampler, LensFlareTex)
 
-// AO (computed at half-res, upsampled in the blur)
-texture2D AORawTex { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = R8; };
+// AO (computed at half-res, upsampled in the blur).
+// rgb = indirect bounce radiance, a = occlusion. RGBA16F because the bounce is
+// linear-light and would band badly in 8-bit at the low end (dungeon interiors).
+texture2D AORawTex { Width = BUFFER_WIDTH/2; Height = BUFFER_HEIGHT/2; Format = RGBA16F; };
 sampler AORawSampler { Texture = AORawTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
-texture2D AOBlurTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R8; };
+texture2D AOBlurTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; };
 sampler AOBlurSampler { Texture = AOBlurTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
 
 // Contact shadows (full-res)
@@ -148,6 +156,8 @@ uniform float AdaptSpeed   < ui_category = "Exposure"; ui_type = "slider"; ui_mi
 uniform float ExposureMin  < ui_category = "Exposure"; ui_type = "slider"; ui_min = 0.05; ui_max = 2.0;  ui_step = 0.01; ui_label = "Min Exposure (gain floor)"; > = 0.25;
 uniform float ExposureMax  < ui_category = "Exposure"; ui_type = "slider"; ui_min = 0.5;  ui_max = 8.0;  ui_step = 0.05; ui_label = "Max Exposure (gain ceiling)"; ui_tooltip = "Lower this to stop dark/night scenes from over-brightening."; > = 2.0;
 uniform float ManualExposure < ui_category = "Exposure"; ui_type = "slider"; ui_min = -4.0; ui_max = 4.0; ui_step = 0.1; ui_label = "Manual Exposure (EV, when auto off)"; > = 0.0;
+uniform bool  MeteringLogAverage   < ui_category = "Exposure"; ui_type = "checkbox"; ui_label = "Log-average Metering"; ui_tooltip = "Meter on the geometric mean instead of the arithmetic mean, so a bright sun or torch in frame stops dragging the whole scene dark - the usual cause of 'everything dims when I look at the sky'.\n\nIf the image now sits brighter than you had it tuned, lower Exposure Key a little."; > = true;
+uniform float MeteringCenterWeight < ui_category = "Exposure"; ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.01; ui_label = "Centre-weighted Metering"; ui_tooltip = "0 = meter the whole frame evenly. Higher = weight the centre of the screen, so exposure follows what you are looking at rather than a bright sky in the corner."; > = 0.35;
 
 // ============================
 // TONEMAP & GRADING
@@ -179,6 +189,13 @@ uniform float AOBias         < ui_category = "Ambient Occlusion"; ui_type = "sli
 uniform float AOFadeStart    < ui_category = "Ambient Occlusion"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "AO Fade Start (depth)"; ui_tooltip = "Normalized depth where AO begins to fade out."; > = 0.6;
 uniform float AOFadeEnd      < ui_category = "Ambient Occlusion"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0;  ui_step = 0.01; ui_label = "AO Fade End (depth)"; ui_tooltip = "Normalized depth where AO is fully gone. Lower this if distant terrain (mountains) still shows AO noise."; > = 0.9;
 uniform float AODistantRadius < ui_category = "Ambient Occlusion"; ui_type = "slider"; ui_min = 0.0; ui_max = 0.1; ui_step = 0.002; ui_label = "AO Distant Radius"; ui_tooltip = "Grows the AO radius with distance so far objects keep a stable, less-noisy AO footprint (XeGTAO-style). 0 = off. An alternative to fading AO out."; > = 0.0;
+
+// ============================
+// INDIRECT LIGHT (screen-space colour bleeding / one bounce)
+// ============================
+uniform bool  EnableGI     < ui_category = "Indirect Light"; ui_type = "checkbox"; ui_label = "Enable Indirect Light"; ui_tooltip = "One-bounce screen-space colour bleeding, gathered by the AO pass. Nearby lit surfaces throw their colour back into the cavities AO just darkened: sunlit rock warms the ground beside it, a torch spills orange onto the wall it faces.\n\nNot true GI - ReShade has no G-buffer or light data, so the on-screen lit colour stands in for the bounce source. Engine-level GI is Community Shaders' job; this fills in the screen-space part."; > = true;
+uniform float GIStrength   < ui_category = "Indirect Light"; ui_type = "slider"; ui_min = 0.0; ui_max = 2.0; ui_step = 0.01; ui_label = "Indirect Strength"; ui_tooltip = "How much bounced light comes back. Raise until crevices and interiors stop reading as flat black holes; back off if the image starts to glow."; > = 0.6;
+uniform float GISaturation < ui_category = "Indirect Light"; ui_type = "slider"; ui_min = 0.0; ui_max = 2.0; ui_step = 0.01; ui_label = "Indirect Saturation"; ui_tooltip = "Colour intensity of the bounce. 0 = neutral grey fill light that only lifts the shadows. 1 = the neighbour's actual colour. Above 1 exaggerates the colour bleed."; > = 1.0;
 
 // ============================
 // CONTACT SHADOWS
@@ -217,11 +234,20 @@ uniform float BloomStrength  < ui_category = "Bloom"; ui_type = "slider"; ui_min
 uniform float BloomRadius    < ui_category = "Bloom"; ui_type = "slider"; ui_min = 0.5; ui_max = 2.0; ui_step = 0.05; ui_label = "Bloom Spread"; ui_tooltip = "Width of the glow (scales the upsample tent)."; > = 1.0;
 
 // ============================
+// LIGHT SOURCE TRACKING
+// The brightest on-screen area, estimated once per frame. Drives god rays, lens
+// flare, fog forward-scattering and the contact-shadow light direction.
+// ============================
+uniform float LightPeakBias       < ui_category = "Light Source"; ui_type = "slider"; ui_min = 0.0; ui_max = 0.99; ui_step = 0.01; ui_label = "Peak Lock"; ui_tooltip = "How tightly the estimate locks onto the single brightest spot. A plain brightness centroid lands halfway between the sun and a bright snowfield - on neither. Higher = only cells near peak brightness count, so the sun wins. Lower it if the light position twitches between two similar sources."; > = 0.75;
+uniform float LightTrackAmount    < ui_category = "Light Source"; ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.01; ui_label = "Contact Shadow Sun Tracking"; ui_tooltip = "Point contact shadows away from the tracked light instead of a fixed direction, so they swing with the sun through the day. 0 = the old fixed key-light direction. Falls back to fixed on its own when no confident light is on screen."; > = 1.0;
+uniform float LightConfidenceGate < ui_category = "Light Source"; ui_type = "slider"; ui_min = 0.0; ui_max = 1.0; ui_step = 0.01; ui_label = "Confidence Gate"; ui_tooltip = "Fade god rays, lens flare and fog glow out when nothing genuinely bright is on screen, so you don't get sun shafts in a windowless dungeon. 0 = never gate (old behaviour), 1 = fully gated."; > = 0.5;
+
+// ============================
 // GOD RAYS (volumetric light scattering from the brightest on-screen light)
 // ============================
 uniform bool  EnableGodrays   < ui_category = "God Rays"; ui_type = "checkbox"; ui_label = "Enable God Rays"; > = true;
 uniform float GodrayIntensity < ui_category = "God Rays"; ui_type = "slider"; ui_min = 0.0; ui_max = 2.0;  ui_step = 0.01;  ui_label = "God Ray Intensity"; > = 0.5;
-uniform float GodrayThreshold < ui_category = "God Rays"; ui_type = "slider"; ui_min = 0.0; ui_max = 1.0;  ui_step = 0.01;  ui_label = "God Ray Threshold"; ui_tooltip = "Brightness a pixel needs to emit shafts. Lower = fuller shafts from more of the sky."; > = 0.2;
+uniform float GodrayThreshold < ui_category = "God Rays"; ui_type = "slider"; ui_min = 0.0; ui_max = 1.0;  ui_step = 0.01;  ui_label = "God Ray Threshold"; ui_tooltip = "Brightness a pixel needs to emit shafts. Lower = fuller shafts from more of the sky.\n\nAlso the threshold Light Source Tracking uses to find the sun, so it feeds lens flare, fog glow and contact-shadow direction too. Measured after exposure."; > = 0.2;
 uniform float GodrayDensity   < ui_category = "God Rays"; ui_type = "slider"; ui_min = 0.1; ui_max = 1.0;  ui_step = 0.01;  ui_label = "God Ray Length"; ui_tooltip = "How far the shafts reach toward the light."; > = 0.6;
 uniform float GodrayDecay     < ui_category = "God Rays"; ui_type = "slider"; ui_min = 0.8; ui_max = 0.99; ui_step = 0.005; ui_label = "God Ray Decay"; ui_tooltip = "Falloff along each shaft. Higher = longer."; > = 0.95;
 uniform float GodraySkyBias    < ui_category = "God Rays"; ui_type = "slider"; ui_min = 0.0; ui_max = 64.0; ui_step = 1.0; ui_label = "God Ray Sky Bias"; ui_tooltip = "Higher = shafts come from the distant sky/sun, not nearby bright geometry (snowy mountains). 0 = any bright pixel. If god rays vanish when you raise this, your depth buffer doesn't mark the sky as far -> leave it at 0."; > = 0.0;
@@ -257,6 +283,12 @@ uniform float ClarityAmount < ui_category = "Local Contrast"; ui_type = "slider"
 uniform float ClarityRadius < ui_category = "Local Contrast"; ui_type = "slider"; ui_min = 8.0; ui_max = 96.0; ui_step = 1.0; ui_label = "Clarity Radius (px)"; ui_tooltip = "Scale of the local contrast. Larger = broader, softer pop."; > = 40.0;
 
 // ============================
+// CHROMATIC ABERRATION (lateral, edge-weighted lens dispersion)
+// ============================
+uniform bool  EnableCA   < ui_category = "Chromatic Aberration"; ui_type = "checkbox"; ui_label = "Enable Chromatic Aberration"; ui_tooltip = "Lateral RGB dispersion that grows toward the frame edges, like a real lens. The centre stays sharp. An optical effect, applied before grain/dither."; > = true;
+uniform float CAStrength < ui_category = "Chromatic Aberration"; ui_type = "slider"; ui_min = 0.0; ui_max = 8.0; ui_step = 0.1; ui_label = "CA Strength (corner px)"; ui_tooltip = "Maximum red/blue split at the frame corners, in pixels (0 at the centre). Subtle is best (~1-2 px)."; > = 1.5;
+
+// ============================
 // SHARPEN & GRAIN
 // ============================
 uniform bool  EnableSharpen < ui_category = "Sharpen & Grain"; ui_type = "checkbox"; ui_label = "Enable Sharpen"; > = true;
@@ -269,4 +301,4 @@ uniform bool  UseBlueNoise  < ui_category = "Sharpen & Grain"; ui_type = "checkb
 // ============================
 // DEBUG
 // ============================
-uniform int DebugMode < ui_category = "Debug"; ui_type = "combo"; ui_items = "Off\0Depth\0Normals\0ViewPos\0CoC\0AO\0Contact\0SSR\0Bloom\0Godrays\0Lens Flare\0"; ui_label = "Debug View"; > = 0;
+uniform int DebugMode < ui_category = "Debug"; ui_type = "combo"; ui_items = "Off\0Depth\0Normals\0ViewPos\0CoC\0AO\0Contact\0SSR\0Bloom\0Godrays\0Lens Flare\0Indirect Light\0Light Position\0"; ui_label = "Debug View"; > = 0;

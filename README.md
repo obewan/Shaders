@@ -4,28 +4,31 @@ Post-processing shaders for ReShade, aimed at a realistic image — primarily fo
 
 ## ReshadeTrueLight
 
-An all-in-one realistic lighting & grading pipeline in a single technique (**v1.0.0**):
+An all-in-one realistic lighting & grading pipeline in a single technique (**v1.1.0**):
 
 **Lighting & geometry**
 - Ambient occlusion — SSAO (fast) and GTAO (quality) modes, per-pixel rotated sampling, distance fade + distant-radius controls
-- Contact shadows
+- Indirect light — one-bounce screen-space colour bleeding gathered by the AO pass, so cavities fill with light of the right colour instead of neutral black
+- Contact shadows — marched toward the tracked on-screen sun, so they swing with the time of day
 - Screen-space reflections — Fresnel-masked, adaptive sphere-trace march, binary refinement, metallic + glossy/roughness
 - Depth of field — blurs the fully processed image (composite-based), separable bokeh, focus-aware sharpen
 
 **Atmosphere & light**
-- Bloom — progressive dual-filter pyramid (CoD/Jimenez) with soft-knee threshold
-- God rays — volumetric light shafts from an estimated on-screen light position
+- Bloom — progressive dual-filter pyramid (CoD/Jimenez) with soft-knee threshold, Karis-weighted prefilter and an exposure-referred threshold
+- Light source tracking — peak-locked estimate of the brightest on-screen light, with a confidence gate, shared by god rays, lens flare, fog glow and contact shadows
+- God rays — volumetric light shafts from the tracked light position, dithered march
 - Lens flare — screen-space ghosts + halo with chromatic aberration
 - Distance / aerial fog — with sun forward-scattering glow and night darkening
 
 **Tone & colour**
-- Auto-exposure with smooth, frame-rate-independent eye adaptation
+- Auto-exposure with smooth, frame-rate-independent eye adaptation — optional log-average and centre-weighted metering
 - Tonemap operators — AgX (default), ACES, Hable (Uncharted 2), Reinhard
 - Grading — contrast, saturation, temperature/tint white balance
 - Local contrast / clarity
 - Purkinje night-vision (the eye's rod/scotopic shift in darkness)
 
 **Finishing**
+- Chromatic aberration — lateral, edge-weighted lens dispersion (sharp centre)
 - Contrast-adaptive sharpening (CAS)
 - Luminance-aware film grain, blue-noise option, dithering
 
@@ -53,7 +56,7 @@ Note: ENB and Community Shaders are mutually exclusive (you run one or the other
 
 ## Notes & limitations
 
-ReShade only has access to the final colour image and the depth buffer — not the engine's G-buffer. So effects that need real surface materials or light data (true GI, world-space height fog, sun-accurate shadows) are intentionally left to engine-level tools like **Community Shaders** or **ENBSeries**; ReshadeTrueLight focuses on the screen-space post that those don't fully cover.
+ReShade only has access to the final colour image and the depth buffer — not the engine's G-buffer. So effects that need real surface materials or light data (true multi-bounce GI, world-space height fog, sun-accurate shadows) are intentionally left to engine-level tools like **Community Shaders** or **ENBSeries**; ReshadeTrueLight focuses on the screen-space post that those don't fully cover. The indirect light and sun-tracked contact shadows here are screen-space approximations built from depth and the on-screen image - they fill in the look, they don't replace engine-level lighting.
 
 ## License
 
