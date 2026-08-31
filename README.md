@@ -4,14 +4,15 @@ Post-processing shaders for ReShade, aimed at a realistic image — primarily fo
 
 ## ReshadeTrueLight
 
-An all-in-one realistic lighting & grading pipeline in a single technique (**v1.1.0**):
+An all-in-one realistic lighting & grading pipeline in a single technique (**v1.2.0**):
 
 **Lighting & geometry**
 - Ambient occlusion — SSAO (fast) and GTAO (quality) modes, per-pixel rotated sampling, distance fade + distant-radius controls
 - Indirect light — one-bounce screen-space colour bleeding gathered by the AO pass, so cavities fill with light of the right colour instead of neutral black
 - Contact shadows — marched toward the tracked on-screen sun, so they swing with the time of day
 - Screen-space reflections — Fresnel-masked, adaptive sphere-trace march, binary refinement, metallic + glossy/roughness
-- Depth of field — blurs the fully processed image (composite-based), separable bokeh, focus-aware sharpen
+- Distant shading — fake directional shading for geometry past the engine's shadow distance, where distant LOD is lit with no occlusion and reads as a flat bright cut-out. Wrapped Lambert against the tracked sun over a wide-baseline normal, with highlight protection so sunlit snow keeps its glare and a haze fadeout so far peaks aren't darkened through their own atmosphere
+- Depth of field — blurs the fully processed image (composite-based), separable bokeh, defocus-aware sharpen
 
 **Atmosphere & light**
 - Bloom — progressive dual-filter pyramid (CoD/Jimenez) with soft-knee threshold, Karis-weighted prefilter and an exposure-referred threshold
@@ -29,7 +30,7 @@ An all-in-one realistic lighting & grading pipeline in a single technique (**v1.
 
 **Finishing**
 - Chromatic aberration — lateral, edge-weighted lens dispersion (sharp centre)
-- Contrast-adaptive sharpening (CAS)
+- Sharpening — two modes: CAS (AMD, edge-safe) and Detail, a local-contrast enhancer that normalises by RMS so faint texture is boosted to the prominence of strong texture. Depth-scaled radius so close-up surfaces get the same treatment as distant ones
 - Luminance-aware film grain, blue-noise option, dithering
 
 Controls are organised into collapsible categories in the ReShade overlay. Typical cost is ~1–2 fps.
@@ -63,5 +64,7 @@ ReShade only has access to the final colour image and the depth buffer — not t
 See repository.
 
 ## Acknowledgements
+
+The **Detail** sharpen mode is a reimplementation of the DELCS algorithm (depth-enhanced local contrast sharpen) by **Marty McFly / Pascal Gilcher**, from the qUINT shader library.
 
 Developed with the help of AI assistants (Anthropic Claude, and earlier scaffolding from Microsoft Copilot, OpenAI ChatGPT and Google Gemini) for code review, debugging and implementation. The design decisions, testing and final tuning are the author's own.
