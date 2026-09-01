@@ -1,7 +1,7 @@
 //===========================================================================
 // SKYRIM REALISTIC PIPELINE — ReshadeTrueLight
 // Author: Obewan (https://github.com/obewan)
-// Version: 1.1.0
+// Version: 1.2.0
 // Requirement:
 //     - bluenoise.png in reshade-shaders/textures (only if Use Blue Noise = true)
 //     - a depth buffer correctly set (check it using the DisplayDepth shader)
@@ -11,6 +11,62 @@
 // frame view/projection matrices, so all effects are single-frame with spatial
 // bilateral filtering. The only cross-frame state is the 1x1 luminance/light
 // adaptation ping-pong (no reprojection needed).
+//
+//---------------------------------------------------------------------------
+// v1.2.0 - distance pass
+//
+// New
+//   - Distant Shading. AO could never fix "the distance is too bright": its
+//     radius is a world-space sphere projected to screen, so its footprint
+//     shrinks with 1/z and past mid-distance it only darkens contact-scale
+//     creases. Meanwhile Skyrim's own shadow map ends well before the horizon,
+//     so far LOD gets sun + ambient with no occlusion and reads as a flat
+//     bright cut-out. This shades it by the angle to the tracked light, over a
+//     deliberately wide-baseline normal (per-pixel parallax at range is below
+//     the depth buffer's precision, so a 1px normal there is just noise), and
+//     ramps in with distance so the engine-shadowed near field is untouched.
+//     Adds a flat Distant Ambient Dim that needs no light direction, for
+//     overcast and night. Debug View > Distant Shading previews the term.
+//
+//   - Sharpen Mode. The CAS path only ever backs off, so faint texture stays
+//     faint. The new Detail mode (after Marty McFly / Pascal Gilcher's qUINT
+//     DELCS) divides the high-pass by local RMS contrast instead, normalising
+//     amplitude so weak texture is boosted to the prominence of strong texture
+//     while outlines are pushed down. Masks depth edges, log-compresses the
+//     tail and composites as an overlay. Now the default.
+//   - Distant Shading gained a Haze Fadeout, and its Highlight Protection now
+//     tests display-referred brightness with the knee capped below 1.0 (at 1.0
+//     the smoothstep was degenerate and quietly disabled protection).
+//   - Sharpening is no longer gated on normalised CoC. Because CoC carries no
+//     notion of how strong the blur actually is, any preset focusing past the
+//     near field zeroed the sharpener there even when the blur was a pixel
+//     wide - the sharpener was inheriting the DoF's focal distance as its own
+//     working range. Now measured against the real blur radius, with a new
+//     Defocus Suppression (px) control (0 decouples the two entirely).
+//   - Detail sharpen's depth-edge mask no longer inherits the near-field radius
+//     boost. It scaled with proximity and smothered the magnified near ground,
+//     which is the one place the boost existed to help.
+//   - Distant Shading gained Highlight Protection. Sunlit snowcaps were losing
+//     their glare: the pass fakes a shadow test, but a peak the engine drew
+//     that bright is one the sun is genuinely hitting, and a depth-derived
+//     normal on distant LOD is too crude to overrule that.
+//
+// Fixed
+//   - Sharpen read as anti-aliasing rather than as a texture enhancer. Its taps
+//     were fixed at one pixel, making it a Nyquist-frequency Laplacian that can
+//     only amplify pixel-scale edges - i.e. it was re-crisping the edges the
+//     recommended pre-pass AA had just resolved. Added Sharpen Radius (px),
+//     defaulting to 2, to move the response into the 2-6 px band where surface
+//     texture actually lives. That radius is now also scaled by 1/distance
+//     (Near Detail Boost): a fixed pixel radius bites on minified distant
+//     geometry but slides over the magnified road at your feet, which is the
+//     opposite of what a sharpen pass is for.
+//   - Sharpen did nothing at any usable slider value. The CAS gain is
+//     1/(1 + 4w) and only takes off as w approaches -0.25, but the slider was
+//     mapped over lerp(0, 0.2, Sharpness) — so the whole useful band sat above
+//     ~0.62 and the 0.25 default moved a midtone pixel by about one 8-bit
+//     level. The kernel now runs at AMD's full peak and the slider scales the
+//     detail it produces, which makes the response linear and 0 still off.
 //
 //---------------------------------------------------------------------------
 // v1.1.0 - lighting pass
@@ -170,9 +226,14 @@ float2 ProjectToUV(float3 v)
 
 // View-space normal from depth, using the smaller of forward/backward
 // differences on each axis to limit bleeding across depth discontinuities.
-float3 EstimateNormal(float2 uv)
+// `px` is the sampling baseline. One pixel is right for contact-scale work, but
+// it is useless at range: a single pixel of parallax on a far surface is smaller
+// than the depth buffer's precision there, so the estimate degenerates into
+// noise. A wider baseline recovers the LOW-frequency form instead — the shape of
+// a hillside rather than the LOD triangle under it — which is what DistantShade
+// needs. Hence the split.
+float3 EstimateNormalAt(float2 uv, float2 px)
 {
-    float2 px = ReShade::PixelSize;
     float3 c = ReconstructViewPos(uv);
 
     float3 dxR = ReconstructViewPos(uv + float2(px.x, 0)) - c;
@@ -192,6 +253,8 @@ float3 EstimateNormal(float2 uv)
     if (dot(n, normalize(-c)) < 0.0) n = -n;
     return n;
 }
+
+float3 EstimateNormal(float2 uv) { return EstimateNormalAt(uv, ReShade::PixelSize); }
 
 // Convert a world-space radius at viewPos into a screen-space UV radius.
 float2 ViewRadiusToUV(float3 viewPos, float worldRadius)
@@ -229,6 +292,79 @@ float LightGate()
 {
     float conf = tex2Dlod(LightPosSampler, float4(0.5, 0.5, 0, 0)).b;
     return lerp(1.0, saturate(conf), LightConfidenceGate);
+}
+
+// ============================
+// DISTANT SHADING
+// ============================
+// Why this exists, given there is already an AO pass: AO is a LOCAL term. Its
+// radius is a world-space sphere projected to screen, so its footprint shrinks
+// with 1/z — past mid-distance it covers a pixel or two and can only ever darken
+// contact-scale creases. It cannot produce the thing that is actually missing at
+// range, which is a shadowed mountain face. Skyrim itself stops helping too: its
+// shadow map ends well before the horizon, so distant LOD is lit by sun plus
+// ambient with no occlusion at all, and reads as a flat bright cut-out.
+//
+// So this stands in for the shadowing the engine gave up on: a wrapped Lambert
+// term against the tracked light, ramped in with distance so anything the engine
+// still shadows is left alone, plus a flat ambient dim for the aerial falloff.
+// It is a cheat — there is no shadow test — but the cue that sells depth is
+// large-scale form, and N.L over a low-frequency normal delivers exactly that.
+float DistantShade(float2 uv, float3 lit)
+{
+    float d = GetDepth(uv);
+    if (d <= 0.0 || d >= 1.0) return 1.0; // sky: leave it alone
+
+    // Ramp in with distance. Below the start the engine's own shadows are still
+    // running and doubling up on them would just crush the near field.
+    float dist = d * CameraFar;
+    float t = saturate((dist - DistantShadeStart) / max(1e-4, DistantShadeFull - DistantShadeStart));
+
+    // ...then fade back OUT into the haze. Past a point, most of what reaches
+    // the camera from a mountain is in-scattered atmosphere rather than light
+    // off rock, and in-scattering is additive: multiplying it down does not
+    // shade the mountain, it dims the air in front of it. That reads as grime on
+    // the horizon, not as form — which is why a term that looks right at mid
+    // range can make the far peaks merely dark. Fading out where the air takes
+    // over keeps the shading on the surfaces that still have surface to shade.
+    if (DistantHazeFade > 0.0)
+        t *= 1.0 - saturate((dist - DistantHazeFade) / max(CameraFar - DistantHazeFade, 1e-4));
+
+    if (t <= 0.0) return 1.0;
+
+    // Wide baseline: the point is the shape of the landform, not its LOD facets.
+    float3 n = EstimateNormalAt(uv, ReShade::PixelSize * DistantShadeScale);
+    float3 L = GetSunDirView(); // surface -> light
+
+    // Wrapped diffuse: the terminator softens and the unlit side settles at
+    // ambient instead of black, which is what a hazy distance actually does.
+    float w = saturate(DistantShadeWrap);
+    float ndl = saturate((dot(n, L) + w) / (1.0 + w));
+
+    // The directional half is only as trustworthy as the light estimate, so it
+    // rides the same confidence gate as god rays and lens flare. The ambient dim
+    // does not — it needs no direction, so it keeps working in an overcast or
+    // sunless scene where the tracker has nothing to lock onto.
+    float directional = lerp(1.0 - DistantShadeStrength * LightGate(), 1.0, ndl);
+    float ambient     = 1.0 - DistantAmbientDim;
+    float shade = lerp(1.0, directional * ambient, t);
+
+    // Spare what is already bright. This term is a stand-in for a shadow test,
+    // and a surface the engine drew that hot is one the sun is hitting — sunlit
+    // snow on a peak, most obviously. Darkening it is not "restoring form", it
+    // is deleting the highlight, and a depth-derived normal on a distant LOD is
+    // far too crude to be trusted over the engine's own verdict on that pixel.
+    // So brightness wins the argument: the shading works the duller rock and
+    // leaves the snow its glare.
+    // Tested display-referred, not on the linear value: `lit` is pre-exposure
+    // linear, where a mid-grey rock reads about 0.2 and nothing but a specular
+    // hit approaches 1.0, so a knee set by eye against the screen protected far
+    // less than it looked like it would. The knee is also capped below 1.0 —
+    // at 1.0 the smoothstep is degenerate and silently disables the whole term.
+    float lum  = pow(saturate(Luma(lit)), 1.0 / 2.2);
+    float knee = min(DistantHighlightKnee, 0.9);
+    float protect = smoothstep(knee, 1.0, lum) * DistantHighlightProtect;
+    return lerp(shade, 1.0, saturate(protect));
 }
 
 // ============================
@@ -1080,9 +1216,39 @@ float3 ApplyClarity(float2 uv, float3 c, float focus)
 // amount adapts to local contrast, so flat detail is sharpened but strong edges
 // are spared the haloes/crunch of a plain unsharp mask. Returned as a detail add
 // so the DoF blur is preserved; `focus` (0..1) skips out-of-focus regions.
+//
+// The tap radius is what decides whether this reads as an edge treatment or as
+// texture. At one pixel the kernel is a Nyquist-frequency Laplacian: the only
+// thing it can amplify is pixel-scale edge structure, which - since this shader
+// wants an AA pass ordered BEFORE it - largely means re-crisping the very edges
+// SMAA/DLAA just resolved. That looks like AA being partly undone, not like
+// stone and cloth gaining grain. Surface texture lives lower, around 2-6 px, so
+// widening the taps moves the response into that band and stops the two passes
+// fighting over the same frequencies.
+//
+// That radius still has to answer to perspective, though. Sharpening is a
+// screen-space operation and so is scale-invariant, but the scene is not: the
+// road under your feet is magnified, spreading one texel over many pixels, while
+// the same material at range is minified into a couple. A fixed pixel radius
+// therefore bites hard on distant geometry and slides straight over the near
+// ground, which has no contrast left at that scale. Growing the kernel as 1/z
+// tracks the projected texel size, so "sharpen" means the same thing to a
+// material however close it is. It only ever grows - clamped at 1x - so the
+// far-field look is unchanged.
+// Tap spacing shared by both sharpen modes: the base radius, widened on near
+// surfaces so the kernel tracks projected texel size. `scale` comes back out
+// because the depth-edge mask has to be normalised against it.
+float2 SharpenTexelStep(float2 uv, out float scale)
+{
+    float z = max(GetDepth(uv) * CameraFar, 1e-3);
+    scale = clamp(SharpenNearDist / z, 1.0, max(SharpenNearBoost, 1.0));
+    return ReShade::PixelSize * max(SharpenRadius, 1.0) * scale;
+}
+
 float3 SharpenPass(float2 uv, float3 c, float focus)
 {
-    float2 t = ReShade::PixelSize;
+    float nearScale;
+    float2 t = SharpenTexelStep(uv, nearScale);
     float3 a = tex2D(CompositeSampler, uv + t * float2(-1, -1)).rgb;
     float3 b = tex2D(CompositeSampler, uv + t * float2( 0, -1)).rgb;
     float3 cc= tex2D(CompositeSampler, uv + t * float2( 1, -1)).rgb;
@@ -1097,10 +1263,118 @@ float3 SharpenPass(float2 uv, float3 c, float focus)
     float3 mx = max(max(max(a, b), max(cc, d)), max(max(e, f), max(max(g, h), i)));
 
     float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
-    float3 w = -amp * lerp(0.0, 0.2, saturate(Sharpness)); // cross weights (negative = sharpen)
+    // Run the kernel at AMD's full strength (peak -0.2) and let the slider scale the
+    // detail it produces. Folding the slider into `w` instead left the effect near-dead
+    // below ~0.7: the 1/(1 + 4w) gain only takes off as w approaches -0.25, so at the
+    // 0.25 default it moved a midtone pixel by about one 8-bit level.
+    float3 w = -amp * 0.2; // cross weights (negative = sharpen)
     float3 cas = (e + (b + d + f + h) * w) / (1.0 + 4.0 * w);
 
-    return saturate(c + (cas - e) * focus); // add the sharpening detail, keep DoF
+    return saturate(c + (cas - e) * saturate(Sharpness) * focus); // scale detail, keep DoF
+}
+
+// Overlay blend. Multiplies in the shadows and screens in the highlights, so
+// adding detail through it preserves the tonality of the pixel instead of
+// pushing both ends toward clipping the way a plain add does. b = 0.5 is the
+// identity, which is why the detail term below is centred there.
+float3 BlendOverlay(float3 a, float3 b)
+{
+    return (a < 0.5) ? (2.0 * a * b) : (1.0 - 2.0 * (1.0 - a) * (1.0 - b));
+}
+
+float3 SharpTap(float2 uv) { return tex2D(CompositeSampler, uv).rgb; }
+
+// Silhouette mask from the depth Laplacian, at a FIXED one-pixel baseline.
+// Deliberately not tied to the colour tap radius: a depth discontinuity is a
+// property of the scene, not of whichever detail band the sharpener was asked to
+// enhance. Widening this baseline with the near-field radius boost made the mask
+// scale with proximity and smother the magnified near ground — the exact place
+// the boost existed to help. One pixel also keeps the threshold on the same
+// calibration DELCS uses.
+//
+// A Laplacian is blind to linear ramps, so a flat receding floor barely registers
+// and only real discontinuities and sharp curvature are masked.
+float DepthEdgeMask(float2 uv)
+{
+    float2 t = ReShade::PixelSize;
+    float A = GetDepth(uv + t * float2(-1, -1));
+    float B = GetDepth(uv + t * float2( 0, -1));
+    float C = GetDepth(uv + t * float2( 1, -1));
+    float D = GetDepth(uv + t * float2(-1,  0));
+    float E = GetDepth(uv);
+    float F = GetDepth(uv + t * float2( 1,  0));
+    float G = GetDepth(uv + t * float2(-1,  1));
+    float H = GetDepth(uv + t * float2( 0,  1));
+    float I = GetDepth(uv + t * float2( 1,  1));
+
+    float edge = (A + C + G + I) + 2.0 * (B + D + F + H) - 12.0 * E;
+    return saturate(1.0 - abs(edge) * DetailDepthMask);
+}
+
+// Detail-enhancing sharpen, after Marty McFly / Pascal Gilcher's qUINT DELCS.
+//
+// The difference from CAS is the polarity of the adaptation, and it is the whole
+// reason this mode exists. CAS asks "is there an edge here?" and backs OFF, but
+// it never boosts anything: faint texture stays faint, and what you notice is
+// the crisper edges. This divides the high-pass by the local RMS contrast, so
+// amplitude is normalised — barely-there weave and grain get amplified up to the
+// same prominence as strong detail, while outlines, which carry most of the
+// contrast in a frame, are divided down. An enhancer rather than a sharpener.
+//
+// Three details make it usable rather than merely loud:
+//   - the depth Laplacian masks silhouettes, where sharpening only ever makes
+//     haloes (a flat receding floor has a LINEAR depth ramp, and a Laplacian is
+//     blind to those, so grazing ground is untouched — only real discontinuities
+//     and sharp curvature register);
+//   - a log knee compresses the tail, since dividing by a small RMS can produce
+//     enormous values in near-flat regions;
+//   - the result is composited as an overlay rather than added.
+float3 DetailSharpen(float2 uv, float3 c, float focus)
+{
+    float nearScale;
+    float2 t = SharpenTexelStep(uv, nearScale); // nearScale unused here: see DepthEdgeMask
+
+    float3 A = SharpTap(uv + t * float2(-1, -1));
+    float3 B = SharpTap(uv + t * float2( 0, -1));
+    float3 C = SharpTap(uv + t * float2( 1, -1));
+    float3 D = SharpTap(uv + t * float2(-1,  0));
+    float3 E = SharpTap(uv);
+    float3 F = SharpTap(uv + t * float2( 1,  0));
+    float3 G = SharpTap(uv + t * float2(-1,  1));
+    float3 H = SharpTap(uv + t * float2( 0,  1));
+    float3 I = SharpTap(uv + t * float2( 1,  1));
+
+    float3 corners = (A + C) + (G + I);
+    float3 neigh   = (B + D) + (F + H);
+
+    // Full 3x3 Laplacian (corners 1, cross 2, centre -12) — wider and more
+    // isotropic than the cross-only kernel CAS uses.
+    float3 detail = corners + 2.0 * neigh - 12.0 * E;
+
+    // Local RMS contrast, the normaliser. DetailFloor keeps a genuinely flat
+    // region (sky, fog) from dividing by ~0 and having its dither amplified.
+    float3 mean = (corners + neigh + E) / 9.0;
+    float3 rms = (mean - A) * (mean - A);
+    rms += (mean - B) * (mean - B);
+    rms += (mean - C) * (mean - C);
+    rms += (mean - D) * (mean - D);
+    rms += (mean - E) * (mean - E);
+    rms += (mean - F) * (mean - F);
+    rms += (mean - G) * (mean - G);
+    rms += (mean - H) * (mean - H);
+    rms += (mean - I) * (mean - I);
+    detail *= rsqrt(rms + max(DetailFloor, 1e-6)) * 0.1;
+
+    detail *= DepthEdgeMask(uv);
+
+    // Luma-only avoids the coloured speckle a per-channel high-pass leaves on
+    // red/blue detail.
+    if (DetailLumaOnly) detail = Luma(detail).xxx;
+
+    detail = -detail * saturate(Sharpness) * 0.1;
+    detail = sign(detail) * log(abs(detail) * 10.0 + 1.0) * 0.3; // soft knee
+
+    return saturate(BlendOverlay(c, 0.5 + detail * focus));
 }
 
 // Film grain: luminance-aware (peaks in midtones like real film, fades in
@@ -1361,6 +1635,10 @@ float4 PS_Composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     if (EnableContact)
         c *= tex2D(ContactBlurSampler, uv).r;
 
+    // Distant shading (linear): the large-scale form AO is too local to give.
+    if (EnableDistantShade)
+        c *= DistantShade(uv, c);
+
     // Exposure
     c *= ComputeExposure();
 
@@ -1448,6 +1726,7 @@ float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
             float3 base = tex2D(CompositeSampler, uv).rgb * 0.35;
             return float4(base + mark * float3(1.0 - lp.b, lp.b, 0.0), 1.0);
         }
+        if (DebugMode == 13) { float3 l = ToLinear(tex2D(BackBuffer, uv).rgb); return float4(DistantShade(uv, l).xxx, 1.0); }
     }
 
     // Chromatic aberration first (optical effect, before the sensor grain/dither).
@@ -1460,12 +1739,25 @@ float4 PS_Photorealism(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targ
         float4 dof = tex2D(DoFBlurSampler, uv);
         float coc = saturate(dof.a);
         c = lerp(c, dof.rgb, coc);
-        focus = 1.0 - coc; // don't sharpen out-of-focus regions
+
+        // Suppress sharpening by the ACTUAL blur in pixels, not by normalised
+        // CoC. CoC is normalised to the focal range and knows nothing about how
+        // strong the blur is, so a preset that focuses far but keeps a small max
+        // radius reads coc = 1 close up while being barely defocused — and the
+        // old gate switched sharpening off completely there. The sharpener was
+        // silently inheriting the DoF's focal distance as its own working range.
+        // Measured against the real radius, a gentle DoF now suppresses gently.
+        // At the default 3 px radius this is identical to the old behaviour.
+        float blurPx = coc * MaxCoCRadius;
+        focus = (SharpenDefocusLimit <= 0.0)
+              ? 1.0
+              : saturate(1.0 - blurPx / SharpenDefocusLimit);
     }
 
     // Local contrast, then sharpen & grain (display space)
     if (EnableClarity) c = ApplyClarity(uv, c, focus);
-    if (EnableSharpen) c = SharpenPass(uv, c, focus);
+    if (EnableSharpen) c = (SharpenMode == 0) ? SharpenPass(uv, c, focus)
+                                              : DetailSharpen(uv, c, focus);
     if (EnableGrain)   c = ApplyGrain(c, uv);
 
     // Dither last, just before 8-bit quantization, to suppress banding.
