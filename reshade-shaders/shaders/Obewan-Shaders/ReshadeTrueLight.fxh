@@ -1,7 +1,7 @@
 //===========================================================================
 // SKYRIM REALISTIC PIPELINE — ReshadeTrueLight Header
 // Author: Obewan (https://github.com/obewan)
-// Version: 1.2.0
+// Version: 1.2.1
 // Requirements
 //   - bluenoise.png in reshade-shaders/textures if Use Blue Noise = true
 //   - A working depth buffer (verify with the stock DisplayDepth shader)
@@ -10,6 +10,10 @@
 // feed per-frame view/projection matrices into a uniform, so the previous
 // reprojection path could never work without a custom C++ addon. All effects
 // are now single-frame and rely on spatial bilateral filtering for stability.
+//
+// v1.2.1 added Contact Shadow Fade Start / Fade End (near -> far scene range,
+// world units) and renamed "Contact Max Distance" to "Contact Ray Length" - it
+// always set the shadow's length, never the effect's reach.
 //
 // v1.2.0 added the "Distant Shading" UI category (fake directional shading for
 // geometry past the engine's shadow distance) and a matching Debug View entry.
@@ -204,8 +208,10 @@ uniform float GISaturation < ui_category = "Indirect Light"; ui_type = "slider";
 // CONTACT SHADOWS
 // ============================
 uniform bool  EnableContact   < ui_category = "Contact Shadows"; ui_type = "checkbox"; ui_label = "Enable Contact Shadows"; > = true;
-uniform float ContactMaxDist  < ui_category = "Contact Shadows"; ui_type = "slider"; ui_min = 0.05; ui_max = 5.0; ui_step = 0.05; ui_label = "Contact Max Distance (world)"; > = 1.0;
+uniform float ContactMaxDist  < ui_category = "Contact Shadows"; ui_type = "slider"; ui_min = 0.05; ui_max = 5.0; ui_step = 0.05; ui_label = "Contact Ray Length (world)"; ui_tooltip = "How far each shadow ray marches, i.e. the longest shadow a contact shadow can cast. This is the length of the shadow, NOT how far into the scene the effect reaches - use Fade Start / Fade End for that."; > = 1.0;
 uniform float ContactStrength < ui_category = "Contact Shadows"; ui_type = "slider"; ui_min = 0.0;  ui_max = 1.0; ui_step = 0.01; ui_label = "Contact Strength"; > = 0.65;
+uniform float ContactFadeStart < ui_category = "Contact Shadows"; ui_type = "slider"; ui_min = 0.0; ui_max = 500.0; ui_step = 1.0; ui_label = "Fade Start (world)"; ui_tooltip = "Scene distance at which contact shadows begin fading out. Contact shadows are a near-field effect: they exist to ground what is right in front of you, and beyond a few tens of units the ray is thinner than one pixel and there is nothing real left to march. Same world units as Fog Start and DoF Focal Distance (normalized depth x Camera Far)."; > = 25.0;
+uniform float ContactFadeEnd   < ui_category = "Contact Shadows"; ui_type = "slider"; ui_min = 1.0; ui_max = 2000.0; ui_step = 5.0; ui_label = "Fade End (world)"; ui_tooltip = "Scene distance at which contact shadows are fully gone. Lower this if distant terrain or mountains still show contact darkening or noise. Distant form is Distant Shading's job, not this pass's."; > = 80.0;
 
 // ============================
 // DISTANT SHADING

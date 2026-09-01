@@ -4,12 +4,12 @@ Post-processing shaders for ReShade, aimed at a realistic image — primarily fo
 
 ## ReshadeTrueLight
 
-An all-in-one realistic lighting & grading pipeline in a single technique (**v1.2.0**):
+An all-in-one realistic lighting & grading pipeline in a single technique (**v1.2.1**):
 
 **Lighting & geometry**
 - Ambient occlusion — SSAO (fast) and GTAO (quality) modes, per-pixel rotated sampling, distance fade + distant-radius controls
 - Indirect light — one-bounce screen-space colour bleeding gathered by the AO pass, so cavities fill with light of the right colour instead of neutral black
-- Contact shadows — marched toward the tracked on-screen sun, so they swing with the time of day
+- Contact shadows — marched toward the tracked on-screen sun, so they swing with the time of day, with a near-field distance fade so far terrain is left to the distant-shading pass
 - Screen-space reflections — Fresnel-masked, adaptive sphere-trace march, binary refinement, metallic + glossy/roughness
 - Distant shading — fake directional shading for geometry past the engine's shadow distance, where distant LOD is lit with no occlusion and reads as a flat bright cut-out. Wrapped Lambert against the tracked sun over a wide-baseline normal, with highlight protection so sunlit snow keeps its glare and a haze fadeout so far peaks aren't darkened through their own atmosphere
 - Depth of field — blurs the fully processed image (composite-based), separable bokeh, defocus-aware sharpen

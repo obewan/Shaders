@@ -1,7 +1,7 @@
 //===========================================================================
 // SKYRIM REALISTIC PIPELINE — ReshadeTrueLight
 // Author: Obewan (https://github.com/obewan)
-// Version: 1.2.0
+// Version: 1.2.1
 // Requirement:
 //     - bluenoise.png in reshade-shaders/textures (only if Use Blue Noise = true)
 //     - a depth buffer correctly set (check it using the DisplayDepth shader)
@@ -11,6 +11,32 @@
 // frame view/projection matrices, so all effects are single-frame with spatial
 // bilateral filtering. The only cross-frame state is the 1x1 luminance/light
 // adaptation ping-pong (no reprojection needed).
+//
+//---------------------------------------------------------------------------
+// v1.2.1
+//
+// Fixed
+//   - Contact shadows darkened distant mountains, and the distance slider
+//     appeared to work backwards. Two causes. "Contact Max Distance" was never
+//     a scene range - it is the ray-march length, i.e. how long a shadow can
+//     be - and nothing limited how far into the scene the pass ran, so it
+//     applied from your boots to the horizon. And because the march is a fixed
+//     WORLD length, its screen footprint shrinks with 1/z: on far geometry the
+//     whole 8-step ray is narrower than one pixel, every step lands back in
+//     the texel it started from, and the depth test ends up comparing the
+//     surface against itself - which reports near-full occlusion on anything
+//     tilted away from the light. The ray length cancels out of that
+//     degenerate case, which is exactly why the slider seemed to do nothing at
+//     range while still changing the near field. Added Fade Start / Fade End
+//     (world units, near -> far) and a sub-pixel guard that rejects samples
+//     which never left the origin texel, so the false occlusion is gone at the
+//     root rather than merely faded over. Far-field form is Distant Shading's
+//     job, at the scale distance actually leaves.
+//
+// Changed
+//   - "Contact Max Distance (world)" renamed "Contact Ray Length (world)". Same
+//     control, honest name: it sets the length of the shadow, not the reach of
+//     the effect.
 //
 //---------------------------------------------------------------------------
 // v1.2.0 - distance pass
@@ -564,10 +590,25 @@ float4 BlurAO(float2 uv)
 // ============================
 // CONTACT SHADOWS (full-res raymarch + bilateral blur)
 // ============================
+// Why there is a distance fade here at all: the march is a fixed WORLD length,
+// so its screen-space footprint shrinks with 1/z. Past a few tens of units the
+// whole ray is narrower than one pixel, every step lands back in the texel it
+// started from, and the depth comparison degenerates into comparing the surface
+// against itself — which reports near-full occlusion on any surface tilted away
+// from the light, at any ray length. That is the mountain-wide darkening: it is
+// not a shadow, it is the ray running out of pixels, and no value of
+// ContactMaxDist fixes it because the term cancels out of the degenerate case.
+// So: fade the pass out over a near-field range (Fade Start -> Fade End), and
+// inside the march reject samples that never left the origin texel. Far-field
+// form belongs to Distant Shading, which works at the scale distance leaves.
 float ComputeContact(float2 uv)
 {
     float d = GetDepth(uv);
     if (d <= 0.0 || d >= 1.0) return 1.0;
+
+    float dist = d * CameraFar;
+    float fade = 1.0 - saturate((dist - ContactFadeStart) / max(1e-4, ContactFadeEnd - ContactFadeStart));
+    if (fade <= 0.0) return 1.0;
 
     float3 p = ReconstructViewPos(uv);
     float3 n = EstimateNormal(uv);
@@ -599,6 +640,10 @@ float ComputeContact(float2 uv)
         float2 sampleUV = ProjectToUV(samplePos);
         if (sampleUV.x < 0.0 || sampleUV.x > 1.0 || sampleUV.y < 0.0 || sampleUV.y > 1.0) break;
 
+        // Sub-pixel guard: a step that has not yet cleared the origin texel is
+        // comparing this pixel's depth against its own, which always "occludes".
+        if (all(abs(sampleUV - uv) < ReShade::PixelSize)) continue;
+
         float sd = GetDepth(sampleUV);
         if (sd <= 0.0 || sd >= 1.0) continue;
 
@@ -612,7 +657,7 @@ float ComputeContact(float2 uv)
         }
     }
 
-    float shadow = lerp(1.0, 1.0 - occlusion, ContactStrength * ndotl);
+    float shadow = lerp(1.0, 1.0 - occlusion, ContactStrength * ndotl * fade);
     return saturate(shadow);
 }
 
